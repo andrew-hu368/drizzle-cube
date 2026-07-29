@@ -91,6 +91,9 @@ export {
 } from './providers/CubeProvider.js'
 export { ScrollContainerProvider, useScrollContainer } from './providers/ScrollContainerContext.js'
 export { useCubeFieldLabel } from './hooks/useCubeFieldLabel.js'
+// Chart plugins render user-facing text through this — a custom chart cannot
+// follow the "configs store keys, components resolve" contract without it.
+export { useTranslation } from './hooks/useTranslation.js'
 export { createCubeClient } from './client/CubeClient.js'
 export { CubeClient } from './client/CubeClient.js'
 

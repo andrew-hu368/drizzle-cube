@@ -46,6 +46,9 @@ export type {
 } from './hooks/queries/index.js'
 
 // Other hooks
+// Chart plugins render user-facing text through this — a custom chart cannot
+// follow the "configs store keys, components resolve" contract without it.
+export { useTranslation } from './hooks/useTranslation.js'
 export { useDebounce } from './hooks/useDebounce.js'
 export { useDirtyStateTracking } from './hooks/useDirtyStateTracking.js'
 export type { UseDirtyStateTrackingOptions, UseDirtyStateTrackingResult } from './hooks/useDirtyStateTracking.js'
