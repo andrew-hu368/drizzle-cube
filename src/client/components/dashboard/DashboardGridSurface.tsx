@@ -36,6 +36,7 @@ export default function DashboardGridSurface() {
     handleAddText,
     handleAddPortlet,
     importExport,
+    refresh,
   } = useDashboardContext()
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -113,6 +114,7 @@ export default function DashboardGridSurface() {
           dashboardFilters={dashboardFilters}
           onPortletRefresh={handlePortletRefresh}
           setPortletComponentRef={handleSetPortletComponentRef}
+          liveRefreshSeconds={refresh.liveIntervalSeconds}
         />
       ) : displayMode === 'scaled' ? (
         <ScaledGridWrapper scaleFactor={scaleFactor} designWidth={designWidth}>

@@ -194,6 +194,8 @@ export interface DashboardRefreshState {
   /** Whether the viewer paused refresh for the whole dashboard */
   isPaused: boolean
   togglePaused: () => void
+  /** The interval a portlet's change-detection subscription runs at now, or undefined when it does not run */
+  liveIntervalSeconds: (portletId: string) => number | undefined
 }
 
 const DashboardContext = createContext<DashboardContextValue | null>(null)

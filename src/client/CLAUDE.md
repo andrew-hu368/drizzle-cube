@@ -48,9 +48,11 @@ src/client/
 │
 ├── client/                        API client
 │   ├── CubeClient.ts             HTTP client for Cube-compatible API
-│   ├── BatchCoordinator.ts       Request batching (one queue per max-age)
-│   ├── subscription.ts           When a subscribed query refetches (Phase 0: interval with max-age)
-│   └── maxAge.ts                 Max-age options → headers; per-hook refetch max-age tracker
+│   ├── BatchCoordinator.ts       Request batching (one queue per max-age; refresh keys travel per query)
+│   ├── RefreshKeyCoordinator.ts  Change detection: one /refresh-keys call per tick for every watched query
+│   ├── subscription.ts           When a subscribed query refetches (key change; interval fallback with max-age)
+│   ├── resultFingerprint.ts      Keep previous rows when a refetch returns the same result fingerprint
+│   └── maxAge.ts                 Max-age / refresh-key options → headers; per-hook refetch tracker
 │
 ├── components/                    React components
 │   ├── AnalysisBuilder/           Query builder (~50 files, see AnalysisBuilder CLAUDE.md)
@@ -147,7 +149,7 @@ src/client/
 │   │   ├── useDashboardController.ts, useGridLayoutEngine.ts
 │   │   ├── useRowLayoutEngine.ts, layoutUtils.ts
 │   │   ├── useDashboardImportExport.ts  Export/import flow (features.dashboardImportExport)
-│   │   ├── useDashboardRefreshTimer.ts  Interval refresh: one timer per interval group (features.refresh)
+│   │   ├── useDashboardLiveRefresh.ts  Which portlets subscribe to change detection, at what interval (features.refresh)
 │   ├── useAnalysisBuilderHook.ts  AnalysisBuilder public facade (useAnalysisBuilder)
 │   ├── useAnalysisState.ts        State: store reads/derivation, query specs, chart config, UI state
 │   ├── useAnalysisQuery.ts        Query: execution only (5 TanStack hooks, mode routing, hasDebounced)

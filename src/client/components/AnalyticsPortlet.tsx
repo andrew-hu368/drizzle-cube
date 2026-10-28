@@ -34,6 +34,7 @@ const AnalyticsPortlet = React.memo(forwardRef<AnalyticsPortletRef, AnalyticsPor
   loadingComponent,
   initialViewState,
   hasIntervalRefresh = false,
+  subscribeIntervalSeconds,
   onDebugDataReady,
   onFreshnessChange
 }, ref) => {
@@ -133,6 +134,7 @@ const AnalyticsPortlet = React.memo(forwardRef<AnalyticsPortletRef, AnalyticsPor
     flowCacheInfo,
     retentionCacheInfo,
     computedAt,
+    checkedAt,
     refresh,
     retry
   } = usePortletQueryResults({
@@ -149,7 +151,8 @@ const AnalyticsPortlet = React.memo(forwardRef<AnalyticsPortletRef, AnalyticsPor
     eagerLoad,
     isVisible,
     isScrolledAway,
-    displayConfig
+    displayConfig,
+    subscribeIntervalSeconds
   })
 
   useEffect(() => {
@@ -162,10 +165,10 @@ const AnalyticsPortlet = React.memo(forwardRef<AnalyticsPortletRef, AnalyticsPor
     onFreshnessChangeRef.current = onFreshnessChange
   }, [onFreshnessChange])
 
-  // Report freshness (computed-at, fetching) to the card header
+  // Report freshness (computed-at, checked-at, fetching) to the card header
   useEffect(() => {
-    onFreshnessChangeRef.current?.({ computedAt, isFetching })
-  }, [computedAt, isFetching])
+    onFreshnessChangeRef.current?.({ computedAt, checkedAt, isFetching })
+  }, [computedAt, checkedAt, isFetching])
 
   // Expose refresh and the view state through ref
   useImperativeHandle(ref, () => ({

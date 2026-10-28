@@ -148,11 +148,14 @@ export function createHookWrapper(
   options: Omit<RenderWithProvidersOptions, 'queryClient'> & { enableBatching?: boolean } = {}
 ) {
   const queryClient = createTestQueryClient()
+  // One object for every render, so a rerender keeps the same CubeClient
+  // (and with it the batch and refresh-key coordinators)
+  const apiOptions = { apiUrl: options.apiUrl || '/api/cubejs-api/v1' }
 
   const wrapper = ({ children }: WrapperProps) => (
     <QueryClientProvider client={queryClient}>
       <CubeProvider
-        apiOptions={{ apiUrl: options.apiUrl || '/api/cubejs-api/v1' }}
+        apiOptions={apiOptions}
         token={options.token}
         features={options.features}
         queryClient={queryClient}

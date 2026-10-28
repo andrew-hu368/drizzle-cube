@@ -47,6 +47,12 @@ export interface UsePortletQueryResultsParams {
   isScrolledAway?: boolean
   /** Chart display config — its `fillMissingDates` drives client-side gap filling */
   displayConfig?: ChartDisplayConfig
+  /**
+   * Keep the portlet current by change detection: the active hook watches its
+   * queries' refresh keys, checked at most this often, and refetches when they
+   * change. Undefined while refresh is off, paused or in edit mode.
+   */
+  subscribeIntervalSeconds?: number
 }
 
 export interface PortletQueryResults {
@@ -62,6 +68,8 @@ export interface PortletQueryResults {
   retentionCacheInfo: ReturnType<typeof useRetentionQuery>['cacheInfo']
   /** When the active mode's rows were computed on the server (oldest result for multi-query) */
   computedAt: string | undefined
+  /** When the server last confirmed the active mode's refresh keys, while subscribed */
+  checkedAt: string | undefined
   refresh: (options?: MaxAgeOptions) => void
   retry: () => void
 }
@@ -81,9 +89,12 @@ export function usePortletQueryResults(params: UsePortletQueryResultsParams): Po
     eagerLoad,
     isVisible,
     isScrolledAway = false,
-    displayConfig
+    displayConfig,
+    subscribeIntervalSeconds
   } = params
   const gapFill = { fillMissingDates: displayConfig?.fillMissingDates }
+  // Only the hook for the active mode runs, so only it subscribes
+  const subscribe = subscribeIntervalSeconds === undefined ? undefined : { intervalSeconds: subscribeIntervalSeconds }
 
   // Derive per-hook skip flags from mode. A hook runs only for its own mode,
   // and fetches only while enabled: the portlet is near the viewport (or
@@ -106,6 +117,7 @@ export function usePortletQueryResults(params: UsePortletQueryResultsParams): Po
     resetResultSetOnChange: true,
     debounceMs: 100, // Lower debounce for portlets (faster response)
     gapFill,
+    subscribe,
   })
 
   const multiQueryResult = useMultiCubeLoadQuery(multiQueryConfig, {
@@ -114,6 +126,7 @@ export function usePortletQueryResults(params: UsePortletQueryResultsParams): Po
     resetResultSetOnChange: true,
     debounceMs: 100,
     gapFill,
+    subscribe,
   })
 
   const funnelQueryResult = useFunnelQuery(funnelConfig, {
@@ -122,18 +135,21 @@ export function usePortletQueryResults(params: UsePortletQueryResultsParams): Po
     debounceMs: 100,
     // Pass prebuilt ServerFunnelQuery directly (new dedicated funnel mode)
     prebuiltServerQuery: serverFunnelQuery,
+    subscribe,
   })
 
   const flowQueryResult = useFlowQuery(serverFlowQuery, {
     skip: shouldSkipFlow,
     enabled,
     debounceMs: 100,
+    subscribe,
   })
 
   const retentionQueryResult = useRetentionQuery(serverRetentionQuery, {
     skip: shouldSkipRetention,
     enabled,
     debounceMs: 100,
+    subscribe,
   })
 
   // Combine results from all hooks
@@ -193,7 +209,15 @@ export function usePortletQueryResults(params: UsePortletQueryResultsParams): Po
     flow: flowQueryResult.computedAt ?? undefined,
     funnel: funnelQueryResult.computedAt ?? undefined,
     multi: oldestComputedAt((multiQueryResult.resultSets ?? []).map(rs => resultSetComputedAt(rs))),
-    single: resultSetComputedAt(singleQueryResult.resultSet)
+    single: singleQueryResult.computedAt ?? resultSetComputedAt(singleQueryResult.resultSet)
+  })
+
+  const checkedAt = pickByMode<string | undefined>({
+    retention: retentionQueryResult.checkedAt,
+    flow: flowQueryResult.checkedAt,
+    funnel: funnelQueryResult.checkedAt,
+    multi: multiQueryResult.checkedAt,
+    single: singleQueryResult.checkedAt
   })
 
   // The one refresh path: the refresh button, shift+click and interval ticks
@@ -244,6 +268,7 @@ export function usePortletQueryResults(params: UsePortletQueryResultsParams): Po
     flowCacheInfo: flowQueryResult.cacheInfo,
     retentionCacheInfo: retentionQueryResult.cacheInfo,
     computedAt,
+    checkedAt,
     refresh,
     retry
   }

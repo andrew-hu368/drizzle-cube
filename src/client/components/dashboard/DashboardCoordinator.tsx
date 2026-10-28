@@ -33,7 +33,7 @@ import type { PortletCardVariant } from '../dashboardPortletCard/cardStyles.js'
 import { findPortletLocation, removeFromGroup, type SnapEdge } from '../../hooks/dashboard/groupUtils.js'
 import { ensureAnalysisConfig } from '../../utils/configMigration.js'
 import { useCubeFeatures } from '../../providers/CubeProvider.js'
-import { useDashboardRefreshTimer } from '../../hooks/dashboard/useDashboardRefreshTimer.js'
+import { useDashboardLiveRefresh } from '../../hooks/dashboard/useDashboardLiveRefresh.js'
 import { useResponsiveDashboard } from '../../hooks/useResponsiveDashboard.js'
 import { ScrollContainerProvider } from '../../providers/ScrollContainerContext.js'
 import { useDashboard } from '../../hooks/useDashboardHook.js'
@@ -723,26 +723,27 @@ export default function DashboardCoordinator({
     actionsRef.current.refreshPortlet(portletId, options)
   }, [])
 
-  // Interval refresh (features.refresh): one timer per interval group, each
-  // tick going through the refresh button's action. Edit mode and the
-  // dashboard-level pause stop the timers; a paused portlet skips its ticks.
+  // Live refresh (features.refresh): a portlet with a refresh interval
+  // subscribes its queries to change detection (one /refresh-keys call per
+  // tick for the page) and refetches when their keys change. Edit mode and the
+  // dashboard-level pause stop every subscription; a paused portlet stops its own.
   const isRefreshPaused = useDashboardStore(state => state.isRefreshPaused)
   const pausedPortletIds = useDashboardStore(state => state.pausedPortletIds)
   const toggleRefreshPaused = useDashboardStore(state => state.toggleRefreshPaused)
   const togglePortletRefreshPaused = useDashboardStore(state => state.togglePortletRefreshPaused)
-  const { hasRefresh } = useDashboardRefreshTimer({
+  const { hasRefresh, liveIntervalSeconds } = useDashboardLiveRefresh({
     portlets: config.portlets,
     dashboardRefresh: config.refresh,
     features,
     stopped: isEditMode || isRefreshPaused,
     pausedPortletIds,
-    refreshPortlet: handlePortletRefresh,
   })
   const refreshState = useMemo(() => ({
     hasRefresh,
     isPaused: isRefreshPaused,
     togglePaused: toggleRefreshPaused,
-  }), [hasRefresh, isRefreshPaused, toggleRefreshPaused])
+    liveIntervalSeconds,
+  }), [hasRefresh, isRefreshPaused, toggleRefreshPaused, liveIntervalSeconds])
 
   // Handle portlet save with scroll-to-new behavior
   const handlePortletSave = useCallback(async (portletData: PortletConfig | Omit<PortletConfig, 'id' | 'x' | 'y'>) => {

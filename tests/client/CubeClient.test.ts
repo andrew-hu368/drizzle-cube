@@ -259,20 +259,55 @@ describe('CubeClient', () => {
     })
   })
 
-  describe('subscribe (issue #271, Phase 0)', () => {
+  describe('refresh keys on loads (issue #271)', () => {
+    it('sends per-query refresh keys in the /batch body, and none when there are none', async () => {
+      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ results: [{ success: true, data: [] }, { success: true, data: [] }] }) })
+      const a: CubeQuery = { measures: ['A.count'] }
+      const b: CubeQuery = { measures: ['B.count'] }
+
+      await client.batchLoad([a, b], undefined, ['key-a', undefined])
+      await client.batchLoad([a, b])
+
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ queries: [a, b], refreshKeys: ['key-a', null] })
+      expect(JSON.parse(mockFetch.mock.calls[1][1].body)).toEqual({ queries: [a, b] })
+    })
+
+    it('sends X-Refresh-Key on load when asked to', async () => {
+      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ data: [] }) })
+      await client.load({ measures: ['A.count'] }, { refreshKey: 'k9' })
+      expect(mockFetch.mock.calls[0][1].headers['X-Refresh-Key']).toBe('k9')
+    })
+
+    it('reads the result fingerprint', async () => {
+      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ results: [{ data: [], fingerprint: 'fp' }] }) })
+      const resultSet = await client.load({ measures: ['A.count'] })
+      expect(resultSet.fingerprint?.()).toBe('fp')
+    })
+  })
+
+  describe('subscribe (issue #271): change detection through /refresh-keys', () => {
     const query: CubeQuery = { measures: ['Users.count'] }
     const calls: Array<{ error: Error | null; rows: unknown[] | null }> = []
     const callback = (error: Error | null, resultSet: CubeResultSet | null) => {
       calls.push({ error, rows: resultSet ? resultSet.rawData() : null })
     }
 
-    function respondWith(rows: unknown[]) {
-      mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ data: rows }) })
+    /**
+     * A fake server behind fetch: `/refresh-keys` answers from `keys` (by
+     * query JSON) or with `refreshKeysStatus`; `/load` answers from `loads`
+     * in order, then repeats the last one.
+     */
+    let keys: Map<string, string | null>
+    let refreshKeysStatus: number
+    let loads: Array<{ rows: unknown[]; fingerprint?: string } | { status: number; error: string }>
+    let requests: Array<{ path: string; headers: Record<string, string>; body?: { queries: CubeQuery[] } }>
+
+    function loadRequests() {
+      return requests.filter(request => request.path === 'load')
     }
 
-    function maxAgeOfCall(index: number): string | undefined {
-      const init: { headers: Record<string, string> } = mockFetch.mock.calls[index][1]
-      return init.headers['X-Cache-Max-Age']
+    function refreshKeyRequests() {
+      return requests.filter(request => request.path === 'refresh-keys')
     }
 
     async function advanceSeconds(seconds: number) {
@@ -282,58 +317,207 @@ describe('CubeClient', () => {
     beforeEach(() => {
       vi.useFakeTimers()
       calls.length = 0
+      keys = new Map()
+      refreshKeysStatus = 200
+      loads = [{ rows: [{ n: 1 }], fingerprint: 'fp-1' }]
+      requests = []
+      mockFetch.mockImplementation(async (url: string, init: { headers: Record<string, string>; body?: string }) => {
+        const path = url.includes('/refresh-keys') ? 'refresh-keys' : url.includes('/load') ? 'load' : 'other'
+        const body = init.body ? JSON.parse(init.body) : undefined
+        requests.push({ path, headers: init.headers, body })
+        if (path === 'refresh-keys') {
+          if (refreshKeysStatus !== 200) {
+            return { ok: false, status: refreshKeysStatus, text: () => Promise.resolve('{"error":"Not found"}') }
+          }
+          const queries: CubeQuery[] = body.queries
+          return {
+            ok: true,
+            json: () => Promise.resolve({
+              keys: queries.map(q => ({ key: keys.has(JSON.stringify(q)) ? keys.get(JSON.stringify(q)) : 'k1', checkAfterSeconds: 10 }))
+            })
+          }
+        }
+        const next = loads.length > 1 ? loads.shift()! : loads[0]
+        if ('status' in next) {
+          return { ok: false, status: next.status, text: () => Promise.resolve(JSON.stringify({ error: next.error })) }
+        }
+        return { ok: true, json: () => Promise.resolve({ results: [{ data: next.rows, fingerprint: next.fingerprint }] }) }
+      })
     })
 
     afterEach(() => {
       vi.useRealTimers()
     })
 
-    it('delivers the initial load, then refetches every 10 s with max-age 10', async () => {
-      respondWith([{ n: 1 }])
-      respondWith([{ n: 2 }])
-      respondWith([{ n: 3 }])
+    it('delivers the initial load, then checks keys and does not reload while they stay the same', async () => {
       const subscription = client.subscribe(query, null, callback)
 
-      await advanceSeconds(0)
+      await advanceSeconds(0.1)
       expect(calls).toEqual([{ error: null, rows: [{ n: 1 }] }])
-      expect(maxAgeOfCall(0)).toBeUndefined()
+      expect(refreshKeyRequests()).toHaveLength(1)
 
-      await advanceSeconds(9)
-      expect(mockFetch).toHaveBeenCalledTimes(1)
-
-      await advanceSeconds(1)
-      expect(calls[1]).toEqual({ error: null, rows: [{ n: 2 }] })
-      expect(maxAgeOfCall(1)).toBe('10')
-
-      await advanceSeconds(10)
-      expect(calls[2]).toEqual({ error: null, rows: [{ n: 3 }] })
-      expect(maxAgeOfCall(2)).toBe('10')
+      await advanceSeconds(30)
+      expect(refreshKeyRequests()).toHaveLength(4)
+      expect(loadRequests()).toHaveLength(1)
+      expect(calls).toHaveLength(1)
 
       subscription.unsubscribe()
     })
 
-    it('applies options to the initial load only', async () => {
-      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ data: [] }) })
+    it('reloads with the new key in X-Refresh-Key when the key changes', async () => {
+      loads = [{ rows: [{ n: 1 }], fingerprint: 'fp-1' }, { rows: [{ n: 2 }], fingerprint: 'fp-2' }]
+      const subscription = client.subscribe(query, null, callback)
+      await advanceSeconds(0.1)
+
+      keys.set(JSON.stringify(query), 'k2')
+      await advanceSeconds(10)
+
+      expect(loadRequests()).toHaveLength(2)
+      expect(loadRequests()[1].headers['X-Refresh-Key']).toBe('k2')
+      expect(loadRequests()[1].headers['X-Cache-Max-Age']).toBeUndefined()
+      expect(calls[1]).toEqual({ error: null, rows: [{ n: 2 }] })
+
+      subscription.unsubscribe()
+    })
+
+    it('sends one /refresh-keys call per tick for every subscription on the client', async () => {
+      const other: CubeQuery = { measures: ['Orders.count'] }
+      const a = client.subscribe(query, null, callback)
+      const b = client.subscribe(other, null, callback)
+      await advanceSeconds(0.1)
+      await advanceSeconds(10)
+
+      expect(refreshKeyRequests()).toHaveLength(2)
+      expect(refreshKeyRequests()[1].body?.queries).toEqual([query, other])
+
+      a.unsubscribe()
+      b.unsubscribe()
+    })
+
+    it('reloads a joined query and a funnel query when their keys change (join-path cube, funnel step cube)', async () => {
+      // On the server a write to Employees moves both keys: Employees is on the
+      // join path of the first query and the cube of the funnel's second step
+      const joined: CubeQuery = { measures: ['Productivity.totalLinesOfCode'], dimensions: ['Departments.name'] }
+      const funnel = {
+        funnel: {
+          bindingKey: [{ cube: 'Productivity', dimension: 'Productivity.employeeId' }, { cube: 'Employees', dimension: 'Employees.id' }],
+          timeDimension: [{ cube: 'Productivity', dimension: 'Productivity.date' }, { cube: 'Employees', dimension: 'Employees.createdAt' }],
+          steps: [{ name: 'Coded', cube: 'Productivity' }, { name: 'Hired', cube: 'Employees' }]
+        }
+      } as unknown as CubeQuery
+      loads = [{ rows: [{ n: 1 }] }]
+      const a = client.subscribe(joined, null, callback)
+      const b = client.subscribe(funnel, null, callback)
+      await advanceSeconds(0.1)
+      expect(loadRequests()).toHaveLength(2)
+
+      keys.set(JSON.stringify(joined), 'after-employees-write')
+      keys.set(JSON.stringify(funnel), 'after-employees-write-funnel')
+      await advanceSeconds(10)
+
+      expect(loadRequests().slice(2).map(request => request.headers['X-Refresh-Key']).sort())
+        .toEqual(['after-employees-write', 'after-employees-write-funnel'])
+
+      a.unsubscribe()
+      b.unsubscribe()
+    })
+
+    it('does not call back when a reload returns the same fingerprint', async () => {
+      loads = [{ rows: [{ n: 1 }], fingerprint: 'same' }, { rows: [{ n: 1 }], fingerprint: 'same' }]
+      const subscription = client.subscribe(query, null, callback)
+      await advanceSeconds(0.1)
+
+      keys.set(JSON.stringify(query), 'k2')
+      await advanceSeconds(10)
+
+      expect(loadRequests()).toHaveLength(2)
+      expect(calls).toHaveLength(1)
+      subscription.unsubscribe()
+    })
+
+    it('calls back for a reload without a fingerprint (an older server)', async () => {
+      loads = [{ rows: [{ n: 1 }] }, { rows: [{ n: 1 }] }]
+      const subscription = client.subscribe(query, null, callback)
+      await advanceSeconds(0.1)
+
+      keys.set(JSON.stringify(query), 'k2')
+      await advanceSeconds(10)
+
+      expect(calls).toHaveLength(2)
+      subscription.unsubscribe()
+    })
+
+    it('falls back to reloading every 10 s with max-age 10 when the server has no /refresh-keys', async () => {
+      refreshKeysStatus = 404
+      loads = [{ rows: [{ n: 1 }] }, { rows: [{ n: 2 }] }, { rows: [{ n: 3 }] }]
       const subscription = client.subscribe(query, { bustCache: true }, callback)
 
+      await advanceSeconds(0.1)
+      expect(loadRequests()[0].headers['X-Cache-Max-Age']).toBe('0')
+
+      await advanceSeconds(9)
+      expect(loadRequests()).toHaveLength(1)
+      await advanceSeconds(1)
+      expect(loadRequests()).toHaveLength(2)
+      expect(loadRequests()[1].headers['X-Cache-Max-Age']).toBe('10')
       await advanceSeconds(10)
-      expect(maxAgeOfCall(0)).toBe('0')
-      expect(maxAgeOfCall(1)).toBe('10')
+      expect(calls.map(call => call.rows)).toEqual([[{ n: 1 }], [{ n: 2 }], [{ n: 3 }]])
 
       subscription.unsubscribe()
     })
 
-    it('stops refetching on unsubscribe', async () => {
-      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ data: [] }) })
+    it('falls back to an interval reload while the query key is null', async () => {
+      keys.set(JSON.stringify(query), null)
       const subscription = client.subscribe(query, null, callback)
-
+      await advanceSeconds(0.1)
       await advanceSeconds(10)
-      expect(mockFetch).toHaveBeenCalledTimes(2)
 
+      expect(loadRequests()).toHaveLength(2)
+      expect(loadRequests()[1].headers['X-Cache-Max-Age']).toBe('10')
       subscription.unsubscribe()
+    })
+
+    it('reloads once more when a key changes while a load is still running', async () => {
+      let resolveFirst: (value: unknown) => void = () => {}
+      const fallthrough = mockFetch.getMockImplementation()
+      let firstLoad = true
+      mockFetch.mockImplementation((url: string, init: { headers: Record<string, string>; body?: string }) => {
+        if (url.includes('/load') && firstLoad) {
+          firstLoad = false
+          requests.push({ path: 'load', headers: init.headers })
+          return new Promise(resolve => { resolveFirst = resolve })
+        }
+        return fallthrough?.(url, init)
+      })
+      loads = [{ rows: [{ n: 2 }], fingerprint: 'fp-2' }]
+      const subscription = client.subscribe(query, null, callback)
+      await advanceSeconds(0.1)
+
+      // The key moves while the initial load is still running
+      keys.set(JSON.stringify(query), 'k2')
+      await advanceSeconds(0.1)
+      keys.set(JSON.stringify(query), 'k3')
+      await advanceSeconds(10)
+      expect(loadRequests()).toHaveLength(1)
+
+      resolveFirst({ ok: true, json: () => Promise.resolve({ results: [{ data: [{ n: 1 }], fingerprint: 'fp-1' }] }) })
+      await advanceSeconds(0.1)
+
+      expect(loadRequests()).toHaveLength(2)
+      expect(loadRequests()[1].headers['X-Refresh-Key']).toBe('k3')
+      expect(calls.map(call => call.rows)).toEqual([[{ n: 1 }], [{ n: 2 }]])
+      subscription.unsubscribe()
+    })
+
+    it('stops checking on unsubscribe', async () => {
+      const subscription = client.subscribe(query, null, callback)
+      await advanceSeconds(0.1)
+      subscription.unsubscribe()
+      keys.set(JSON.stringify(query), 'k2')
       await advanceSeconds(60)
-      expect(mockFetch).toHaveBeenCalledTimes(2)
-      expect(calls).toHaveLength(2)
+
+      expect(refreshKeyRequests()).toHaveLength(1)
+      expect(loadRequests()).toHaveLength(1)
     })
 
     it('drops a result still in flight when unsubscribed', async () => {
@@ -346,55 +530,35 @@ describe('CubeClient', () => {
       await advanceSeconds(30)
 
       expect(calls).toHaveLength(0)
-      expect(mockFetch).toHaveBeenCalledTimes(1)
     })
 
-    it('delivers errors to the callback and keeps refetching', async () => {
-      mockFetch.mockResolvedValueOnce({ ok: false, status: 500, text: () => Promise.resolve('{"error":"boom"}') })
-      respondWith([{ n: 2 }])
+    it('delivers errors to the callback and keeps going', async () => {
+      loads = [{ status: 500, error: 'boom' }, { rows: [{ n: 2 }], fingerprint: 'fp-2' }]
       const subscription = client.subscribe(query, null, callback)
 
-      await advanceSeconds(0)
-      expect(calls).toHaveLength(1)
-      expect(calls[0].error).toBeInstanceOf(Error)
+      await advanceSeconds(0.1)
       expect(calls[0].error?.message).toBe('boom')
       expect(calls[0].rows).toBeNull()
 
+      keys.set(JSON.stringify(query), 'k2')
       await advanceSeconds(10)
       expect(calls[1]).toEqual({ error: null, rows: [{ n: 2 }] })
 
       subscription.unsubscribe()
     })
 
-    it('skips a tick while the previous load is still in flight', async () => {
-      let resolveLoad: (value: unknown) => void = () => {}
-      mockFetch.mockReturnValueOnce(new Promise(resolve => { resolveLoad = resolve }))
-      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ data: [{ n: 2 }] }) })
-      const subscription = client.subscribe(query, null, callback)
-
-      await advanceSeconds(10)
-      expect(mockFetch).toHaveBeenCalledTimes(1)
-
-      resolveLoad({ ok: true, json: () => Promise.resolve({ data: [{ n: 1 }] }) })
-      await advanceSeconds(10)
-      expect(calls.map(call => call.rows)).toEqual([[{ n: 1 }], [{ n: 2 }]])
-
-      subscription.unsubscribe()
-    })
-
-    it('floors the interval by minSubscribeIntervalSeconds', async () => {
+    it('checks no more often than minSubscribeIntervalSeconds', async () => {
       const slowClient = new CubeClient(undefined, {
         apiUrl: 'http://localhost:4000/cubejs-api/v1',
         minSubscribeIntervalSeconds: 30
       })
-      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ data: [] }) })
       const subscription = slowClient.subscribe(query, null, callback)
+      await advanceSeconds(0.1)
 
       await advanceSeconds(29)
-      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(refreshKeyRequests()).toHaveLength(1)
       await advanceSeconds(1)
-      expect(mockFetch).toHaveBeenCalledTimes(2)
-      expect(maxAgeOfCall(1)).toBe('30')
+      expect(refreshKeyRequests()).toHaveLength(2)
 
       subscription.unsubscribe()
     })

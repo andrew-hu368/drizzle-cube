@@ -7,6 +7,7 @@
 
 import type { CubeQuery } from '../types.js'
 import type { MaxAgeOptions } from '../client/maxAge.js'
+import type { SubscribeOption } from '../client/subscription.js'
 
 /**
  * Binding key configuration - the dimension that links funnel steps together.
@@ -245,6 +246,11 @@ export interface UseFunnelQueryOptions {
    * Use this with the new dedicated funnel mode (analysisType === 'funnel').
    */
   prebuiltServerQuery?: ServerFunnelQuery | null
+  /**
+   * Keep the query current: refetch when its refresh key changes (see
+   * `useCubeLoadQuery`'s `subscribe`). `{ intervalSeconds }` checks less often.
+   */
+  subscribe?: SubscribeOption
 }
 
 /**
@@ -280,6 +286,9 @@ export interface UseFunnelQueryResult {
 
   /** When the rows were computed on the server (cache time on a hit, else response time) */
   computedAt?: string | null
+
+  /** When the server last confirmed the query's refresh key (ISO), while subscribed */
+  checkedAt?: string
 
   /** Error if execution failed */
   error: Error | null

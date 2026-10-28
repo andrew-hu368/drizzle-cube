@@ -39,6 +39,8 @@ interface MobileStackedLayoutProps {
    * refresh button leaves refreshing to `onPortletRefresh`.
    */
   setPortletComponentRef?: (portletId: string, element: AnalyticsPortletRef | null) => void
+  /** Per portlet, the interval its change-detection subscription runs at, or undefined when off */
+  liveRefreshSeconds?: (portletId: string) => number | undefined
 }
 
 /**
@@ -50,7 +52,8 @@ export default function MobileStackedLayout({
   colorPalette,
   dashboardFilters,
   onPortletRefresh,
-  setPortletComponentRef
+  setPortletComponentRef,
+  liveRefreshSeconds
 }: MobileStackedLayoutProps) {
   const { t } = useTranslation()
   const portletComponentRefs = useRef<{ [key: string]: { refresh: () => void } | null }>({})
@@ -216,6 +219,7 @@ export default function MobileStackedLayout({
             dashboardFilters={dashboardFilters}
             dashboardFilterMapping={portlet.dashboardFilterMapping}
             eagerLoad={portlet.eagerLoad ?? config.eagerLoad ?? false}
+            subscribeIntervalSeconds={liveRefreshSeconds?.(portlet.id)}
             title={portlet.title}
             height={isAutoHeight ? 'auto' : contentHeight}
             colorPalette={colorPalette}

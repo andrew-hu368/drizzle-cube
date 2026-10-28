@@ -1577,6 +1577,8 @@
   "dashboard.portlet.freshness.minutes": "{count}m",
   "dashboard.portlet.freshness.hours": "{count}u",
   "dashboard.portlet.freshness.computedAt": "Gegevens berekend om {time}",
+  "dashboard.portlet.freshness.checkedAt": "Gecontroleerd op wijzigingen om {time}",
+  "dashboard.portlet.freshness.uncheckedTitle": "Niet bevestigd als actueel gedurende twee vernieuwingsintervallen (elk {interval}s)",
   "dashboard.portlet.freshness.updating": "Bijwerken",
   "dashboard.portlet.freshness.staleTitle": "Gegevens zijn ouder dan twee vernieuwingsintervallen (elk {interval}s)",
   "dashboard.portlet.freshness.pausedTitle": "Automatisch vernieuwen is gepauzeerd",

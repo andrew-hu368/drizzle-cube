@@ -19,6 +19,8 @@ import { stableStringify } from '../../shared/queryKey.js'
 import { useDebounceQuery } from '../useDebounceQuery.js'
 import { withChartGapFilling, type ChartGapFillOptions } from '../../utils/gapFilling.js'
 import { createRefetchMaxAgeTracker, type MaxAgeOptions } from '../../client/maxAge.js'
+import { isResultSet, keepRowsWhenUnchanged, sameFingerprint } from '../../client/resultFingerprint.js'
+import { useQuerySubscription, type SubscribeOption } from './useQuerySubscription.js'
 
 type MultiQueryServerConfig = MultiQueryConfig & { queries: CubeQuery[] }
 
@@ -26,22 +28,40 @@ type MultiQueryServerConfig = MultiQueryConfig & { queries: CubeQuery[] }
  * Gap-fill each successful query's result set for a chart, then re-derive the
  * merged and per-query data from the filled rows.
  */
+/**
+ * Merged, gap-filled rows per unfilled merged rows array and fill option. A
+ * refetch that kept its rows (unchanged fingerprints) keeps the same unfilled
+ * array, so it gets the same filled arrays back and the chart does not redraw.
+ */
+const filledMergeCache = new WeakMap<object, Map<string, { data: unknown[]; perQueryData: (unknown[] | null)[] }>>()
+
 function fillMultiQueryData(
   resultSets: CubeResultSet[],
   errors: (Error | null)[],
   config: MultiQueryServerConfig,
-  gapFill: ChartGapFillOptions
+  gapFill: ChartGapFillOptions,
+  unfilledData: unknown[]
 ): { resultSets: CubeResultSet[]; data: unknown[]; perQueryData: (unknown[] | null)[] } {
   const filled = resultSets.map((rs, i) => (errors[i] || !rs ? rs : withChartGapFilling(rs, gapFill)))
-  const successful = filled.filter((_, i) => !errors[i])
-  const successfulQueries = config.queries.filter((_, i) => !errors[i])
-  return {
-    resultSets: filled,
-    data: successful.length > 0
-      ? mergeQueryResults(successful, successfulQueries, config.mergeStrategy, config.mergeKeys, config.queryLabels)
-      : [],
-    perQueryData: filled.map((rs, i) => (errors[i] ? null : rs.rawData()))
+  const cacheKey = String(gapFill.fillMissingDates)
+  let byOption = filledMergeCache.get(unfilledData)
+  if (!byOption) {
+    byOption = new Map()
+    filledMergeCache.set(unfilledData, byOption)
   }
+  let rows = byOption.get(cacheKey)
+  if (!rows) {
+    const successful = filled.filter((_, i) => !errors[i])
+    const successfulQueries = config.queries.filter((_, i) => !errors[i])
+    rows = {
+      data: successful.length > 0
+        ? mergeQueryResults(successful, successfulQueries, config.mergeStrategy, config.mergeKeys, config.queryLabels)
+        : [],
+      perQueryData: filled.map((rs, i) => (errors[i] ? null : rs.rawData()))
+    }
+    byOption.set(cacheKey, rows)
+  }
+  return { resultSets: filled, ...rows }
 }
 
 // Default debounce delay in milliseconds
@@ -96,6 +116,12 @@ export interface UseMultiCubeLoadQueryOptions {
    * merging. Omit for raw rows.
    */
   gapFill?: ChartGapFillOptions
+  /**
+   * Keep the queries current: refetch when any of their refresh keys changes
+   * (see `useCubeLoadQuery`'s `subscribe`). `{ intervalSeconds }` checks less
+   * often.
+   */
+  subscribe?: SubscribeOption
 }
 
 export interface UseMultiCubeLoadQueryResult {
@@ -126,6 +152,8 @@ export interface UseMultiCubeLoadQueryResult {
    * results at most that old, or `{ bustCache: true }` to bypass caches.
    */
   refetch: (options?: MaxAgeOptions) => void
+  /** When the server last confirmed the queries' refresh keys (ISO), while subscribed */
+  checkedAt?: string
 }
 
 /**
@@ -167,6 +195,7 @@ export function useMultiCubeLoadQuery(
     staleTime = 60 * 1000,
     keepPreviousData = true,
     gapFill,
+    subscribe,
   } = options
   // Primitives, so an inline `gapFill` object doesn't re-merge on every render
   const gapFillEnabled = !!gapFill
@@ -205,7 +234,10 @@ export function useMultiCubeLoadQuery(
     queryFn: async () => {
       if (!serverConfig) throw new Error('No config provided')
 
-      const resultSets: CubeResultSet[] = await refetchMaxAge.runFetch((loadOptions) => {
+      const resultSets: CubeResultSet[] = await refetchMaxAge.runFetch((pendingOptions) => {
+        // Each query carries its own refresh key (attached by the client), so
+        // a subscription's combined key marker is not sent
+        const loadOptions = pendingOptions && { ...pendingOptions, refreshKey: undefined }
         // Use BatchCoordinator if enabled
         if (enableBatching && batchCoordinator) {
           return Promise.all(
@@ -264,6 +296,8 @@ export function useMultiCubeLoadQuery(
     // fetches with it once enabled
     staleTime: () => (refetchMaxAge.hasPendingMaxAge() ? 0 : staleTime),
     placeholderData: keepPreviousData ? (prevData) => prevData : undefined,
+    // Same result fingerprints as the rows shown: keep those rows, take the new freshness
+    structuralSharing: shareUnchangedMultiResult,
   })
 
   // Refetch with the requested max-age. While the hook is skipped (an
@@ -276,6 +310,14 @@ export function useMultiCubeLoadQuery(
     if (serverConfig && !skip && enabled) void refetchQuery({ cancelRefetch })
   }, [refetchMaxAge, serverConfig, skip, enabled, refetchQuery])
 
+  // Subscription: refetch when any of the queries' refresh keys changes
+  const { checkedAt } = useQuerySubscription({
+    queries: serverConfig?.queries ?? null,
+    subscribe,
+    active: !skip && enabled && !!serverConfig,
+    refetch
+  })
+
   // Gap-fill for a chart when asked. Uses the config the result was fetched
   // with, so placeholder data from a previous config merges consistently.
   const filledResult = useMemo(() => {
@@ -283,7 +325,7 @@ export function useMultiCubeLoadQuery(
     if (!result || !gapFillEnabled) return result
     return {
       ...result,
-      ...fillMultiQueryData(result.resultSets, result.errors, result.config, { fillMissingDates: gapFillMissingDates })
+      ...fillMultiQueryData(result.resultSets, result.errors, result.config, { fillMissingDates: gapFillMissingDates }, result.data)
     }
   }, [queryResult.data, gapFillEnabled, gapFillMissingDates])
 
@@ -307,5 +349,31 @@ export function useMultiCubeLoadQuery(
     debouncedConfig,
     isValidConfig,
     refetch,
+    checkedAt,
   }
+}
+
+/**
+ * `structuralSharing` for the multi-query result: when every query's result
+ * fingerprint is unchanged, keep the merged rows and per-query rows (and each
+ * result set's rows) and take the new freshness.
+ */
+function shareUnchangedMultiResult(previous: unknown, next: unknown): unknown {
+  if (!hasResultSets(previous) || !hasResultSets(next)) return next
+  const unchanged = next.resultSets.length === previous.resultSets.length &&
+    next.resultSets.every((resultSet, index) =>
+      sameFingerprint(resultSet?.fingerprint?.(), previous.resultSets[index]?.fingerprint?.()))
+  if (!unchanged) return next
+  return {
+    ...next,
+    data: previous.data,
+    perQueryData: previous.perQueryData,
+    resultSets: next.resultSets.map((resultSet, index) => keepRowsWhenUnchanged(previous.resultSets[index], resultSet))
+  }
+}
+
+function hasResultSets(value: unknown): value is { resultSets: CubeResultSet[]; data: unknown; perQueryData: unknown } {
+  return typeof value === 'object' && value !== null && 'resultSets' in value &&
+    Array.isArray(value.resultSets) && value.resultSets.every(isResultSet) &&
+    'data' in value && 'perQueryData' in value
 }

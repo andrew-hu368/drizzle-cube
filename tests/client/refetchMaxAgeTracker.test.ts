@@ -90,3 +90,27 @@ describe('createRefetchMaxAgeTracker', () => {
     expect(calls).toEqual([{ maxAgeSeconds: 30 }, { maxAgeSeconds: 5 }])
   })
 })
+
+describe('refresh keys in the refetch tracker', () => {
+  it('keeps the newest refresh key alongside the stricter max-age', () => {
+    expect(retainStricterMaxAge({ maxAgeSeconds: 10 }, { refreshKey: 'k1' })).toEqual({ maxAgeSeconds: 10, refreshKey: 'k1' })
+    expect(retainStricterMaxAge({ refreshKey: 'k1' }, { refreshKey: 'k2' })).toEqual({ refreshKey: 'k2' })
+    expect(retainStricterMaxAge({ refreshKey: 'k1' }, { maxAgeSeconds: 5 })).toEqual({ maxAgeSeconds: 5, refreshKey: 'k1' })
+    const current = { refreshKey: 'k1' }
+    expect(retainStricterMaxAge(current, { refreshKey: 'k1' })).toBe(current)
+  })
+
+  it('reports a new refresh key as a change, so the refetch cancels a fetch in flight', async () => {
+    const tracker = createRefetchMaxAgeTracker()
+    expect(tracker.recordMaxAge({ refreshKey: 'k1' })).toBe(true)
+    expect(tracker.recordMaxAge({ refreshKey: 'k1' })).toBe(false)
+    expect(tracker.recordMaxAge({ refreshKey: 'k2' })).toBe(true)
+    const calls: Array<MaxAgeOptions | undefined> = []
+    await tracker.runFetch(options => {
+      calls.push(options)
+      return Promise.resolve('rows')
+    })
+    expect(calls).toEqual([{ refreshKey: 'k2' }])
+    expect(tracker.hasPendingMaxAge()).toBe(false)
+  })
+})
