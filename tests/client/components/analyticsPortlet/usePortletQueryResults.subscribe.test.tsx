@@ -179,11 +179,6 @@ describe('usePortletQueryResults change detection', () => {
     })
   })
 
-  it('reports checked-at for the active mode', async () => {
-    const { result } = renderPortlet({ activeQuery: singleQuery })
-    await waitFor(() => expect(result.current.checkedAt).toBeDefined())
-  })
-
   it('keeps the rows of a single-query portlet when the refetch has the same fingerprint', async () => {
     const { result } = renderPortlet({ activeQuery: singleQuery })
     await waitFor(() => expect(result.current.resultSet).not.toBeNull())

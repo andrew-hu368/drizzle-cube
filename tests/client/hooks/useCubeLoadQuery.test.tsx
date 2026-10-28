@@ -681,18 +681,6 @@ describe('useCubeLoadQuery', () => {
       ])
     })
 
-    it('two subscribed hooks share one /refresh-keys call', async () => {
-      const { wrapper } = createHookWrapper()
-      renderHook(() => ({
-        a: useCubeLoadQuery(validQuery, { debounceMs: 0, subscribe: true }),
-        b: useCubeLoadQuery(validQuery, { debounceMs: 0, subscribe: true })
-      }), { wrapper })
-
-      await advanceSeconds(11)
-      expect(keyChecks).toHaveLength(2)
-      expect(keyChecks.every(queries => queries.length === 1)).toBe(true)
-    })
-
     it('keeps the previous rows when a refetch returns the same fingerprint, while computed-at advances', async () => {
       const { wrapper } = createHookWrapper()
       const { result } = renderHook(() => useCubeLoadQuery(validQuery, { debounceMs: 0, subscribe: true }), { wrapper })

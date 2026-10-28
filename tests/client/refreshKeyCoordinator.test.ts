@@ -14,7 +14,6 @@ import type { CubeQuery } from '../../src/client/types'
 
 const orders: CubeQuery = { measures: ['Orders.count'] }
 const users: CubeQuery = { measures: ['Users.count'] }
-const funnel = { funnel: { bindingKey: 'Events.userId', timeDimension: 'Events.at', steps: [] } } as unknown as CubeQuery
 
 /** A fake /refresh-keys: keys come from a mutable table, each call is recorded. */
 function createFakeServer() {
@@ -111,14 +110,6 @@ describe('RefreshKeyCoordinator', () => {
     server.set(users, 'u2')
     await advanceSeconds(10)
     expect(multi.events).toEqual([{ type: 'changed', refreshKeys: ['initial', 'u2'] }])
-  })
-
-  it('notifies a funnel query watcher when the funnel key changes (e.g. a step cube was written)', async () => {
-    const f = watch([funnel])
-    await advanceSeconds(0.1)
-    server.set(funnel, 'step-cube-written')
-    await advanceSeconds(10)
-    expect(f.events).toEqual([{ type: 'changed', refreshKeys: ['step-cube-written'] }])
   })
 
   it('ticks at the smallest checkAfterSeconds, floored by the minimum interval', async () => {

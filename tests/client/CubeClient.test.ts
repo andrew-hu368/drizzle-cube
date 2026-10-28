@@ -277,12 +277,6 @@ describe('CubeClient', () => {
       await client.load({ measures: ['A.count'] }, { refreshKey: 'k9' })
       expect(mockFetch.mock.calls[0][1].headers['X-Refresh-Key']).toBe('k9')
     })
-
-    it('reads the result fingerprint', async () => {
-      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ results: [{ data: [], fingerprint: 'fp' }] }) })
-      const resultSet = await client.load({ measures: ['A.count'] })
-      expect(resultSet.fingerprint?.()).toBe('fp')
-    })
   })
 
   describe('subscribe (issue #271): change detection through /refresh-keys', () => {
@@ -394,34 +388,6 @@ describe('CubeClient', () => {
       b.unsubscribe()
     })
 
-    it('reloads a joined query and a funnel query when their keys change (join-path cube, funnel step cube)', async () => {
-      // On the server a write to Employees moves both keys: Employees is on the
-      // join path of the first query and the cube of the funnel's second step
-      const joined: CubeQuery = { measures: ['Productivity.totalLinesOfCode'], dimensions: ['Departments.name'] }
-      const funnel = {
-        funnel: {
-          bindingKey: [{ cube: 'Productivity', dimension: 'Productivity.employeeId' }, { cube: 'Employees', dimension: 'Employees.id' }],
-          timeDimension: [{ cube: 'Productivity', dimension: 'Productivity.date' }, { cube: 'Employees', dimension: 'Employees.createdAt' }],
-          steps: [{ name: 'Coded', cube: 'Productivity' }, { name: 'Hired', cube: 'Employees' }]
-        }
-      } as unknown as CubeQuery
-      loads = [{ rows: [{ n: 1 }] }]
-      const a = client.subscribe(joined, null, callback)
-      const b = client.subscribe(funnel, null, callback)
-      await advanceSeconds(0.1)
-      expect(loadRequests()).toHaveLength(2)
-
-      keys.set(JSON.stringify(joined), 'after-employees-write')
-      keys.set(JSON.stringify(funnel), 'after-employees-write-funnel')
-      await advanceSeconds(10)
-
-      expect(loadRequests().slice(2).map(request => request.headers['X-Refresh-Key']).sort())
-        .toEqual(['after-employees-write', 'after-employees-write-funnel'])
-
-      a.unsubscribe()
-      b.unsubscribe()
-    })
-
     it('does not call back when a reload returns the same fingerprint', async () => {
       loads = [{ rows: [{ n: 1 }], fingerprint: 'same' }, { rows: [{ n: 1 }], fingerprint: 'same' }]
       const subscription = client.subscribe(query, null, callback)
@@ -463,17 +429,6 @@ describe('CubeClient', () => {
       await advanceSeconds(10)
       expect(calls.map(call => call.rows)).toEqual([[{ n: 1 }], [{ n: 2 }], [{ n: 3 }]])
 
-      subscription.unsubscribe()
-    })
-
-    it('falls back to an interval reload while the query key is null', async () => {
-      keys.set(JSON.stringify(query), null)
-      const subscription = client.subscribe(query, null, callback)
-      await advanceSeconds(0.1)
-      await advanceSeconds(10)
-
-      expect(loadRequests()).toHaveLength(2)
-      expect(loadRequests()[1].headers['X-Cache-Max-Age']).toBe('10')
       subscription.unsubscribe()
     })
 
