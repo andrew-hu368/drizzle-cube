@@ -7,6 +7,9 @@ import type { SQL } from 'drizzle-orm'
 import type { DrizzleDatabase } from './core.js'
 import type { DatabaseAdapter } from '../adapters/base-adapter.js'
 
+/** A supported database engine */
+export type EngineType = 'postgres' | 'mysql' | 'sqlite' | 'singlestore' | 'duckdb' | 'databend' | 'snowflake'
+
 /**
  * Database executor interface that wraps Drizzle ORM
  * Provides type-safe SQL execution with engine-specific implementations
@@ -21,7 +24,7 @@ export interface DatabaseExecutor {
   /** Execute a Drizzle SQL query or query object */
   execute<T = any[]>(query: SQL | any, numericFields?: string[]): Promise<T>
   /** Get the database engine type */
-  getEngineType(): 'postgres' | 'mysql' | 'sqlite' | 'singlestore' | 'duckdb' | 'databend' | 'snowflake'
+  getEngineType(): EngineType
   /** Execute EXPLAIN on a SQL query to get the execution plan */
   explainQuery(sqlString: string, params: unknown[], options?: ExplainOptions): Promise<ExplainResult>
   /** Get existing indexes for the specified tables */

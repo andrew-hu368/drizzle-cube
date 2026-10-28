@@ -40,9 +40,9 @@ import {
   type BindingKeyErrors,
   type WithSubquery,
   addMemberOrMappingCubes,
-  addMemberCube,
-  addFilterCubes
+  addMemberCube
 } from './analysis-utils.js'
+import { extractCubeNamesFromFilter } from '../logical-plan/planner-utils.js'
 import { FilterBuilder } from './filter-builder.js'
 import { DateTimeBuilder } from './date-time-builder.js'
 
@@ -94,8 +94,8 @@ export class RetentionQueryBuilder {
     addMemberOrMappingCubes(config.timeDimension, cubes)
     addMemberOrMappingCubes(config.bindingKey, cubes)
     for (const dimension of config.breakdownDimensions ?? []) addMemberCube(dimension, cubes)
-    addFilterCubes(config.cohortFilters, cubes)
-    addFilterCubes(config.activityFilters, cubes)
+    extractCubeNamesFromFilter(config.cohortFilters, cubes)
+    extractCubeNamesFromFilter(config.activityFilters, cubes)
     return cubes
   }
 

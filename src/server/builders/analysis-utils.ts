@@ -230,20 +230,7 @@ export function addMemberOrMappingCubes(
     addMemberCube(spec, cubes)
     return
   }
-  for (const mapping of Array.isArray(spec) ? spec : [spec]) {
+  for (const mapping of [spec].flat()) {
     if (mapping.cube) cubes.add(mapping.cube)
-  }
-}
-
-/** Add every cube a filter (or list of filters, nested and/or included) references. */
-export function addFilterCubes(filters: Filter | Filter[] | undefined, cubes: Set<string>): void {
-  if (!filters) return
-  for (const filter of Array.isArray(filters) ? filters : [filters]) {
-    if ('member' in filter) {
-      addMemberCube(filter.member, cubes)
-    } else {
-      addFilterCubes(filter.and, cubes)
-      addFilterCubes(filter.or, cubes)
-    }
   }
 }

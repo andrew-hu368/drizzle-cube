@@ -41,9 +41,9 @@ import {
   asGroupFilter,
   type WithSubquery,
   addMemberOrMappingCubes,
-  addMemberCube,
-  addFilterCubes
+  addMemberCube
 } from './analysis-utils.js'
+import { extractCubeNamesFromFilter } from '../logical-plan/planner-utils.js'
 import { FilterBuilder } from './filter-builder.js'
 import { DateTimeBuilder } from './date-time-builder.js'
 
@@ -80,7 +80,7 @@ export class FlowQueryBuilder {
     addMemberOrMappingCubes(config.bindingKey, cubes)
     addMemberOrMappingCubes(config.timeDimension, cubes)
     addMemberCube(config.eventDimension, cubes)
-    addFilterCubes(config.startingStep?.filter, cubes)
+    extractCubeNamesFromFilter(config.startingStep?.filter, cubes)
     return cubes
   }
 

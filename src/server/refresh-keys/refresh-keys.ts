@@ -9,9 +9,9 @@
  * depend on it `null`.
  */
 
-import type { CacheConfig, Cube, SecurityContext, SemanticQuery } from '../types/index.js'
-import { generateRefreshKeyCacheKey, strongHash } from '../cache-utils.js'
-import { hasEvaluatedRefreshKey, refreshKeyEverySeconds } from './definition.js'
+import type { CacheConfig, CacheProvider, Cube, SemanticQuery } from '../types/index.js'
+import { strongHash } from '../cache-utils.js'
+import { refreshKeyEverySeconds } from './definition.js'
 
 /** One query's composite refresh key. */
 export interface QueryRefreshKey {
@@ -27,55 +27,42 @@ export interface QueryRefreshKey {
 
 /** What the refresh-key computation needs from the semantic layer. */
 export interface RefreshKeyEnvironment {
-  /** The cube set serving the caller's security context */
-  cubes: Map<string, Cube>
-  /** Cube-set key, part of every probe cache key */
-  cubeSetKey: string
-  securityContext: SecurityContext
   /**
-   * Hash of the full security context, mixed into every composite key so two
-   * contexts never get comparable keys, even over identical rows.
+   * Security-context hash and cube-set key, mixed into every composite key so
+   * two contexts never get comparable keys, even over identical rows.
    */
-  contextHash: string
-  cacheConfig?: CacheConfig
+  scope: string
   /** Engine default `every` for cubes that do not set one */
   defaultEverySeconds: number
   /** Validate a query and list the cubes it reads (throws on an invalid query) */
-  dependentCubes(query: SemanticQuery): string[]
+  dependentCubes(query: SemanticQuery): Cube[]
   /** Evaluate a cube's key query */
   evaluate(cube: Cube): Promise<unknown>
   /** Error sink for a failing cube key */
   onError(cubeName: string, error: unknown): void
-  now(): number
+  /** Probe cache, scoped to the caller's context and cube set */
+  cache?: { provider: CacheProvider; key(cubeName: string): string; onError?: CacheConfig['onError'] }
 }
 
 /** Serialise a probe value so equal values give equal strings across engines and caches. */
-function serialiseProbeValue(value: unknown): string {
+export function serialiseProbeValue(value: unknown): string {
   if (value instanceof Date) return value.toISOString()
   if (typeof value === 'bigint') return value.toString()
-  return JSON.stringify(value ?? null)
+  return JSON.stringify(value ?? null, (_key, v: unknown) => (typeof v === 'bigint' ? v.toString() : v))
 }
 
 async function cubeKey(cube: Cube, everySeconds: number, env: RefreshKeyEnvironment): Promise<string | null> {
-  if (!hasEvaluatedRefreshKey(cube)) {
+  if (!cube.refreshKey?.sql) {
     // `every` alone, or no refresh key: the current time bucket
-    return `bucket:${Math.floor(env.now() / (everySeconds * 1000))}`
+    return `bucket:${Math.floor(Date.now() / (everySeconds * 1000))}`
   }
 
-  const { cacheConfig } = env
-  const provider = cacheConfig?.enabled !== false ? cacheConfig?.provider : undefined
-  const cacheKey = provider
-    ? generateRefreshKeyCacheKey(cube.name, env.securityContext, cacheConfig ?? {}, env.cubeSetKey)
-    : undefined
-
-  try {
-    if (provider && cacheKey) {
-      const cached = await provider.get<string>(cacheKey)
-      if (cached && typeof cached.value === 'string') return cached.value
-    }
-  } catch (error) {
-    cacheConfig?.onError?.(error instanceof Error ? error : new Error(String(error)), 'get')
+  const { cache } = env
+  const report = (operation: 'get' | 'set') => (error: unknown) => {
+    cache?.onError?.(error instanceof Error ? error : new Error(String(error)), operation)
   }
+  const cached = await cache?.provider.get<string>(cache.key(cube.name)).catch(report('get'))
+  if (cached && typeof cached.value === 'string') return cached.value
 
   let value: string
   try {
@@ -85,11 +72,7 @@ async function cubeKey(cube: Cube, everySeconds: number, env: RefreshKeyEnvironm
     return null
   }
 
-  try {
-    if (provider && cacheKey) await provider.set(cacheKey, value, everySeconds * 1000)
-  } catch (error) {
-    cacheConfig?.onError?.(error instanceof Error ? error : new Error(String(error)), 'set')
-  }
+  await cache?.provider.set(cache.key(cube.name), value, everySeconds * 1000).catch(report('set'))
   return value
 }
 
@@ -102,28 +85,24 @@ export async function computeRefreshKeys(
   env: RefreshKeyEnvironment
 ): Promise<QueryRefreshKey[]> {
   const dependencies = queries.map((query) => env.dependentCubes(query))
+  const cubes = new Map(dependencies.flat().map((cube) => [cube.name, cube]))
 
-  const everyByCube = new Map<string, number>()
-  for (const name of new Set(dependencies.flat())) {
-    const cube = env.cubes.get(name)
-    if (cube) everyByCube.set(name, refreshKeyEverySeconds(cube, env.defaultEverySeconds))
-  }
-
-  const keys = new Map<string, string | null>()
-  await Promise.all(
-    Array.from(everyByCube, async ([name, everySeconds]) => {
-      const cube = env.cubes.get(name)
-      keys.set(name, cube ? await cubeKey(cube, everySeconds, env) : null)
-    })
+  const keys = new Map(
+    await Promise.all(
+      Array.from(cubes.values(), async (cube) => {
+        const every = refreshKeyEverySeconds(cube, env.defaultEverySeconds)
+        return [cube.name, { name: cube.name, every, key: await cubeKey(cube, every, env) }] as const
+      })
+    )
   )
 
-  return dependencies.map((names) => {
-    const everys = names.map((name) => everyByCube.get(name) ?? env.defaultEverySeconds)
-    const checkAfterSeconds = everys.length > 0 ? Math.min(...everys) : env.defaultEverySeconds
-    const parts = names.map((name) => [name, keys.get(name) ?? null] as const)
-    if (parts.some(([, value]) => value === null)) {
+  return dependencies.map((queryCubes) => {
+    const entries = queryCubes.flatMap((cube) => keys.get(cube.name) ?? [])
+    const checkAfterSeconds = entries.length > 0 ? Math.min(...entries.map(({ every }) => every)) : env.defaultEverySeconds
+    if (entries.some(({ key }) => key === null)) {
       return { key: null, checkAfterSeconds }
     }
-    return { key: strongHash(JSON.stringify([env.contextHash, env.cubeSetKey, parts])), checkAfterSeconds }
+    const parts = entries.map(({ name, key }) => [name, key])
+    return { key: strongHash(JSON.stringify([env.scope, parts])), checkAfterSeconds }
   })
 }

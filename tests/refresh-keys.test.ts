@@ -178,6 +178,20 @@ describe.skipIf(!canWrite)('Refresh keys', () => {
       expect(tenant1).not.toBe(tenant1OtherUser)
     })
 
+    it('scopes keys by the cache securityContextSerializer, even with includeSecurityContext off', async () => {
+      const cache = new MemoryCacheProvider({ defaultTtlMs: 60000 })
+      const byOrg = createLayer(allKeys, {
+        cache: { provider: cache, securityContextSerializer: (ctx) => String(ctx.organisationId) }
+      })
+      expect((await keyOf(byOrg, employeesQuery, org1)).key)
+        .toBe((await keyOf(byOrg, employeesQuery, { ...org1, userId: 42 })).key)
+
+      const unscopedCache = createLayer(allKeys, { cache: { provider: cache, includeSecurityContext: false } })
+      expect((await keyOf(unscopedCache, employeesQuery, org1)).key)
+        .not.toBe((await keyOf(unscopedCache, employeesQuery, { ...org1, userId: 42 })).key)
+      await cache.close()
+    })
+
     it('does not move for a write in another tenant', async () => {
       const layer = createLayer()
       const before = (await keyOf(layer, employeesQuery, org1)).key

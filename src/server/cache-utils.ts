@@ -50,21 +50,7 @@ export function generateCacheKey(
   const queryHash = strongHash(JSON.stringify(normalizedQuery))
 
   // Include security context in key for tenant isolation
-  let key = `${prefix}query:${queryHash}`
-
-  if (config.includeSecurityContext !== false) {
-    const ctxString = config.securityContextSerializer
-      ? config.securityContextSerializer(securityContext)
-      : JSON.stringify(sortObject(securityContext))
-    const ctxHash = strongHash(ctxString)
-    key += `:ctx:${ctxHash}`
-  }
-
-  if (cubeSetKey) {
-    key += `:cubes:${cubeSetKey}`
-  }
-
-  return key
+  return `${prefix}query:${queryHash}${scopeSuffix(securityContext, config, cubeSetKey)}`
 }
 
 /**
@@ -83,20 +69,18 @@ export function generateRefreshKeyCacheKey(
   cubeSetKey?: string
 ): string {
   const prefix = config.keyPrefix ?? 'drizzle-cube:'
-  let key = `${prefix}refreshKey:${cubeName}`
+  return `${prefix}refreshKey:${cubeName}${scopeSuffix(securityContext, config, cubeSetKey)}`
+}
 
-  if (config.includeSecurityContext !== false) {
-    const ctxString = config.securityContextSerializer
-      ? config.securityContextSerializer(securityContext)
-      : JSON.stringify(sortObject(securityContext))
-    key += `:ctx:${strongHash(ctxString)}`
-  }
+/** Security-context hash for cache scoping, honouring `securityContextSerializer`. */
+export function securityContextHash(securityContext: SecurityContext, config: CacheKeyConfig = {}): string {
+  const serializer = config.securityContextSerializer ?? ((ctx: SecurityContext) => JSON.stringify(sortObject(ctx)))
+  return strongHash(serializer(securityContext))
+}
 
-  if (cubeSetKey) {
-    key += `:cubes:${cubeSetKey}`
-  }
-
-  return key
+function scopeSuffix(securityContext: SecurityContext, config: CacheKeyConfig, cubeSetKey: string | undefined): string {
+  const ctx = config.includeSecurityContext !== false ? `:ctx:${securityContextHash(securityContext, config)}` : ''
+  return cubeSetKey ? `${ctx}:cubes:${cubeSetKey}` : ctx
 }
 
 /**

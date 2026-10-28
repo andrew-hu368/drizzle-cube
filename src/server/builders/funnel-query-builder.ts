@@ -34,9 +34,9 @@ import {
   asGroupFilter,
   type GroupFilterParts,
   type WithSubquery,
-  addMemberOrMappingCubes,
-  addFilterCubes
+  addMemberOrMappingCubes
 } from './analysis-utils.js'
+import { extractCubeNamesFromFilter } from '../logical-plan/planner-utils.js'
 import { FilterBuilder } from './filter-builder.js'
 import { NO_VALUE_FILTER_OPERATORS } from './filter-operators.js'
 import { DateTimeBuilder } from './date-time-builder.js'
@@ -94,7 +94,7 @@ export class FunnelQueryBuilder {
     addMemberOrMappingCubes(config.timeDimension, cubes)
     for (const step of config.steps) {
       if ('cube' in step && step.cube) cubes.add(step.cube)
-      addFilterCubes(step.filter, cubes)
+      extractCubeNamesFromFilter(step.filter, cubes)
     }
     return cubes
   }
