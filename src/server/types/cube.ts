@@ -104,6 +104,48 @@ export interface MultiCubeQueryContext
 }
 
 /**
+ * Context passed to a key query (`refreshKey.sql`). Adds the cube's resolved
+ * base query, so the author can reuse its FROM/JOIN/WHERE (and with it the
+ * cube's security filter) instead of writing the tenant filter again.
+ */
+export interface RefreshKeyQueryContext extends QueryContext {
+  /** The cube's base query (`cube.sql(ctx)`), resolved for this security context */
+  baseQuery: BaseQueryDefinition
+}
+
+/**
+ * A cube's refresh key: a cheap value that changes when the cube's data
+ * changes. Clients poll `/refresh-keys` and refetch a query only when the key
+ * of a cube it depends on moved.
+ *
+ * Set at most one of `expression` and `sql`. Without either, `every` makes the
+ * key the current time bucket. A cube with no `refreshKey` gets the default
+ * time bucket: 10 seconds, or 2 minutes on Snowflake and Databend.
+ */
+export interface CubeRefreshKey {
+  /**
+   * Key expression (preferred): one aggregate selected over this cube's base
+   * query, so the cube's security filter applies and the key cannot see other
+   * tenants' rows. Pick something that moves on insert, update and delete, e.g.
+   * sql`count(*) + coalesce(sum(${orders.version}), 0)` or `max(updated_at)`.
+   */
+  expression?: (ctx: QueryContext) => SQL
+  /**
+   * Key query (Cube.js parity): a standalone single-row, single-column query.
+   * Unlike Cube.js, where `refresh_key.sql` is a SQL string, this is a function
+   * returning Drizzle `SQL`. Its author must scope it to the context; reuse
+   * `ctx.baseQuery.where` and check it with `assertRefreshKeyIsContextScoped`.
+   */
+  sql?: (ctx: RefreshKeyQueryContext) => SQL
+  /**
+   * Cube.js duration (`'10 seconds'`, `'1 minute'`). With `expression` or `sql`,
+   * the minimum interval between evaluations of the key. Alone, the key is the
+   * current time bucket of this length.
+   */
+  every?: string
+}
+
+/**
  * Hierarchy definition for grouped drill-down paths
  * Groups dimensions into ordered levels for structured navigation
  */
@@ -168,6 +210,9 @@ export interface Cube {
 
   /** Additional metadata */
   meta?: Record<string, any>
+
+  /** Change detection for subscriptions and live dashboards. See {@link CubeRefreshKey}. */
+  refreshKey?: CubeRefreshKey
 }
 
 /**

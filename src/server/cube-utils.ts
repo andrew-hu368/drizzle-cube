@@ -13,6 +13,7 @@ import type {
   MultiCubeQueryContext,
   SqlExpression
 } from './types/index.js'
+import { validateCubeRefreshKey } from './refresh-keys/definition.js'
 
 /**
  * Resolve cube reference (handles direct, lazy, and string name references)
@@ -226,6 +227,7 @@ export function defineCube(
   name: string,
   definition: Omit<Cube, 'name'>
 ): Cube {
+  validateCubeRefreshKey(name, definition.refreshKey)
   return {
     name,
     ...definition

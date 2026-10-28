@@ -208,3 +208,42 @@ export function resolveTimeDimensionExpr(
   }
   return resolveSqlExpression(dimension.sql, context) as SQL
 }
+
+// ---------------------------------------------------------------------------
+// Cubes used — analysis modes bypass the logical plan, so each builder lists
+// the cubes its SQL reads with these helpers (refresh-key dependencies).
+// ---------------------------------------------------------------------------
+
+/** Add the cube of a `Cube.member` reference. */
+export function addMemberCube(member: string | undefined, cubes: Set<string>): void {
+  const cubeName = member?.split('.')[0]
+  if (cubeName) cubes.add(cubeName)
+}
+
+/** Add the cubes of a `'Cube.member'` string or of `{ cube }` mappings. */
+export function addMemberOrMappingCubes(
+  spec: string | { cube: string } | Array<{ cube: string }> | undefined,
+  cubes: Set<string>
+): void {
+  if (spec === undefined) return
+  if (typeof spec === 'string') {
+    addMemberCube(spec, cubes)
+    return
+  }
+  for (const mapping of Array.isArray(spec) ? spec : [spec]) {
+    if (mapping.cube) cubes.add(mapping.cube)
+  }
+}
+
+/** Add every cube a filter (or list of filters, nested and/or included) references. */
+export function addFilterCubes(filters: Filter | Filter[] | undefined, cubes: Set<string>): void {
+  if (!filters) return
+  for (const filter of Array.isArray(filters) ? filters : [filters]) {
+    if ('member' in filter) {
+      addMemberCube(filter.member, cubes)
+    } else {
+      addFilterCubes(filter.and, cubes)
+      addFilterCubes(filter.or, cubes)
+    }
+  }
+}

@@ -5,6 +5,7 @@
  */
 
 import { sql } from 'drizzle-orm'
+import type { SQL } from 'drizzle-orm'
 import type {
   SecurityContext,
   SemanticQuery,
@@ -44,7 +45,9 @@ import type { NormalizedPeriod } from './builders/comparison-query-builder.js'
 import { FunnelQueryBuilder } from './builders/funnel-query-builder.js'
 import { FlowQueryBuilder } from './builders/flow-query-builder.js'
 import { RetentionQueryBuilder } from './builders/retention-query-builder.js'
-import { LogicalPlanBuilder, IdentityOptimiser } from './logical-plan/index.js'
+import { LogicalPlanBuilder, IdentityOptimiser, collectPlanCubeNames } from './logical-plan/index.js'
+import { analyzeCubeUsage } from './logical-plan/planner-utils.js'
+import { applyBaseJoins } from './physical-plan/semi-join.js'
 import type { PlanOptimiser, OptimiserEngineType, QueryNode } from './logical-plan/index.js'
 import { DrizzlePlanBuilder } from './physical-plan/index.js'
 import { t } from '../i18n/runtime.js'
@@ -64,6 +67,16 @@ function debugSql(label: string, query: { toSQL(): { sql: string; params: unknow
   } catch {
     // toSQL() not available on this query object
   }
+}
+
+/** A Drizzle database whose dialect can render a `SQL` object to text and params. */
+function hasSqlDialect(
+  db: unknown
+): db is { dialect: { sqlToQuery(query: SQL): { sql: string; params: unknown[] } } } {
+  if (typeof db !== 'object' || db === null || !('dialect' in db)) return false
+  const dialect: unknown = db.dialect
+  return typeof dialect === 'object' && dialect !== null && 'sqlToQuery' in dialect &&
+    typeof dialect.sqlToQuery === 'function'
 }
 
 interface ComparisonExecutionPlan {
@@ -244,6 +257,93 @@ export class QueryExecutor {
     const context = this.createQueryContext(securityContext, filterCache, query)
     this.filterCachePreloader.preload(query, filterCache, cubes, context)
     return this.buildRegularQueryArtifacts(cubes, query, context).analysis
+  }
+
+  /**
+   * The cubes a query reads: its refresh-key dependencies. Validates the query
+   * for its mode first (unknown members throw, as on execute). Regular and
+   * comparison queries take their cubes from the logical plan, so a cube on
+   * the join path counts even when the query names none of its members;
+   * funnel, flow and retention bypass the plan and list their own.
+   */
+  getDependentCubeNames(
+    cubes: Map<string, Cube>,
+    query: SemanticQuery,
+    securityContext: SecurityContext
+  ): string[] {
+    const mode = this.modeRouter.resolveMode(query)
+    this.modeRouter.validateForMode(mode, cubes, query)
+
+    let names: Set<string>
+    if (mode === 'funnel' && query.funnel) {
+      names = this.funnelQueryBuilder.cubesUsed(query.funnel)
+    } else if (mode === 'flow' && query.flow) {
+      names = this.flowQueryBuilder.cubesUsed(query.flow)
+    } else if (mode === 'retention' && query.retention) {
+      names = this.retentionQueryBuilder.cubesUsed(query.retention)
+    } else {
+      // Every comparison period plans the same cubes; plan the first one.
+      const planQuery = mode === 'comparison'
+        ? this.buildComparisonExecutionPlan(query).periodQueries[0]
+        : query
+      names = collectPlanCubeNames(this.buildLogicalPlan(cubes, planQuery, securityContext))
+      for (const name of analyzeCubeUsage(planQuery)) names.add(name)
+    }
+    return Array.from(names).filter((name) => cubes.has(name)).sort()
+  }
+
+  /**
+   * Evaluate a cube's key expression or key query under the security context,
+   * inside the RLS transaction when one is configured. Returns the single
+   * value the key selects (undefined when it returned no row).
+   */
+  async evaluateRefreshKey(cube: Cube, securityContext: SecurityContext): Promise<unknown> {
+    return this.withRLSContext(securityContext, async () => {
+      const probe = this.buildRefreshKeyProbe(cube, securityContext)
+      if (!probe) return undefined
+      const rows = await this.dbExecutor.execute<Array<Record<string, unknown>>>(probe.query)
+      const row = Array.isArray(rows) ? rows[0] : undefined
+      if (!row || typeof row !== 'object') return undefined
+      return probe.kind === 'expression' ? row.value : Object.values(row)[0]
+    })
+  }
+
+  /**
+   * The SQL text and bound parameters a cube's refresh key runs for this
+   * context, or undefined for a time-bucket key or an engine whose Drizzle
+   * dialect cannot render SQL. Used by the two-context scoping check.
+   */
+  renderRefreshKey(cube: Cube, securityContext: SecurityContext): { sql: string; params: unknown[] } | undefined {
+    const probe = this.buildRefreshKeyProbe(cube, securityContext)
+    if (!probe) return undefined
+    if (probe.kind === 'expression') {
+      const { sql: text, params } = probe.query.toSQL()
+      return { sql: text, params }
+    }
+    const db: unknown = this.dbExecutor.db
+    return hasSqlDialect(db) ? db.dialect.sqlToQuery(probe.query) : undefined
+  }
+
+  private buildRefreshKeyProbe(
+    cube: Cube,
+    securityContext: SecurityContext
+  ): { kind: 'expression'; query: any } | { kind: 'sql'; query: SQL } | undefined {
+    const refreshKey = cube.refreshKey
+    const context: QueryContext = { ...this.createQueryContext(securityContext), cube }
+    const baseQuery = cube.sql(context)
+
+    if (refreshKey?.expression) {
+      let query = context.db
+        .select({ value: refreshKey.expression(context) })
+        .from(baseQuery.from)
+      query = applyBaseJoins(query, baseQuery)
+      if (baseQuery.where) query = query.where(baseQuery.where)
+      return { kind: 'expression', query }
+    }
+    if (refreshKey?.sql) {
+      return { kind: 'sql', query: refreshKey.sql({ ...context, baseQuery }) }
+    }
+    return undefined
   }
 
   /**

@@ -33,6 +33,7 @@ export type {
 // Builders
 export { LogicalPlanner } from './logical-planner.js'
 export { LogicalPlanBuilder } from './logical-plan-builder.js'
+export { collectPlanCubeNames } from './plan-cubes.js'
 export type { LogicalPlanWithAnalysis } from './logical-plan-builder.js'
 
 // Planning phases (composed by LogicalPlanner)

@@ -32,6 +32,10 @@ import { validateQueryAgainstCubes } from './query-validator.js'
 import type { QueryValidationResult } from './query-validator.js'
 import type { PlanOptimiser } from './logical-plan/index.js'
 import { t } from '../i18n/runtime.js'
+import { validateCubeRefreshKey, defaultRefreshKeyEverySeconds, hasEvaluatedRefreshKey } from './refresh-keys/definition.js'
+import { computeRefreshKeys } from './refresh-keys/refresh-keys.js'
+import { strongHash, sortObject } from './cache-utils.js'
+import type { QueryRefreshKey } from './refresh-keys/refresh-keys.js'
 
 // Re-exported for backward compatibility — the implementation now lives in
 // query-validator.ts so the executor can import it without depending on the
@@ -381,6 +385,7 @@ export class SemanticLayerCompiler {
    * will be visible alongside it.
    */
   private prepareCube(cube: Cube, visibleCubes: Map<string, Cube>): void {
+    validateCubeRefreshKey(cube.name, cube.refreshKey)
     this.validateCalculatedMeasures(cube, visibleCubes)
     const resolver = new CalculatedMeasureResolver(visibleCubes)
     resolver.populateDependencies(cube)
@@ -860,6 +865,64 @@ export class SemanticLayerCompiler {
    */
   validateQuery(query: SemanticQuery, securityContext: SecurityContext): QueryValidationResult {
     return validateQueryAgainstCubes(this.resolveCubes(securityContext), query)
+  }
+
+  /**
+   * Composite refresh keys for `queries` under this security context, in
+   * order. Each key is a hash of the refresh keys of every cube the query
+   * reads (join-path cubes and every cube of a funnel, flow or retention
+   * included), so it changes when any of them changes. Compare it with the key
+   * from the previous call and refetch only when it moved, passing it as
+   * `ExecutionOptions.refreshKey` so viewers in one context share the refetch.
+   *
+   * Resolves the per-tenant cube set like `execute`, takes each cube's refresh
+   * key from that set, and caches probes per context key and cube-set key for
+   * `every`. Throws on an invalid query, as `execute` does. A cube key that
+   * fails is logged and turns only its queries' keys to `null`.
+   */
+  async getRefreshKeys(queries: SemanticQuery[], securityContext: SecurityContext): Promise<QueryRefreshKey[]> {
+    const setId = this.resolveSetId(securityContext)
+    const cubes = this.cubeSetId2Cubes(setId)
+    const planner = this.createQueryExecutor(false)
+
+    return computeRefreshKeys(queries, {
+      cubes,
+      cubeSetKey: this.cubeSetCacheKey(setId),
+      securityContext,
+      contextHash: strongHash(JSON.stringify(sortObject(securityContext))),
+      cacheConfig: this.cacheConfig,
+      defaultEverySeconds: defaultRefreshKeyEverySeconds(this.engineType),
+      dependentCubes: (query) => planner.getDependentCubeNames(cubes, query, securityContext),
+      // A fresh executor per probe: an RLS transaction swaps the executor's
+      // connection, so concurrent probes must not share one.
+      evaluate: (cube) => this.createQueryExecutor(false).evaluateRefreshKey(cube, securityContext),
+      onError: (cubeName, error) => {
+        // codeql[js/log-injection] cube name and error come from server code, not the request
+        console.error(`[drizzle-cube] Refresh key for cube '${cubeName}' failed:`, error)
+      },
+      now: () => Date.now()
+    })
+  }
+
+  /**
+   * Evaluate one cube's refresh key under a security context, with the SQL
+   * and parameters it ran. Backs {@link assertRefreshKeyIsContextScoped}; the
+   * value is the raw probe result, never sent to a client.
+   */
+  async describeRefreshKey(
+    cubeName: string,
+    securityContext: SecurityContext
+  ): Promise<{ evaluated: boolean; value: unknown; query?: { sql: string; params: unknown[] } }> {
+    const cube = this.resolveCubes(securityContext).get(cubeName)
+    if (!cube) {
+      throw new Error(t('server.errors.cubeNotFound', { cubeName }))
+    }
+    const executor = this.createQueryExecutor(false)
+    return {
+      evaluated: hasEvaluatedRefreshKey(cube),
+      value: await executor.evaluateRefreshKey(cube, securityContext),
+      query: executor.renderRefreshKey(cube, securityContext)
+    }
   }
 
   /**

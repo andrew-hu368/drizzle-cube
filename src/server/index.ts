@@ -94,6 +94,14 @@ export {
 // Export cube definitions
 export { defineCube } from './cube-utils.js'
 
+// Refresh keys (change detection for subscriptions and live dashboards)
+export type { QueryRefreshKey } from './refresh-keys/refresh-keys.js'
+export { assertRefreshKeyIsContextScoped } from './refresh-keys/testing.js'
+export {
+  DEFAULT_REFRESH_KEY_EVERY_SECONDS,
+  WAREHOUSE_REFRESH_KEY_EVERY_SECONDS
+} from './refresh-keys/definition.js'
+
 // Export cache utilities
 export {
   generateCacheKey,

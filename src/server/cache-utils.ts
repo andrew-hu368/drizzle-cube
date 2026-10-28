@@ -68,6 +68,38 @@ export function generateCacheKey(
 }
 
 /**
+ * Cache key for one cube's refresh-key probe under a security context.
+ *
+ * Key structure: {prefix}refreshKey:{cubeName}:ctx:{securityHash}:cubes:{cubeSetKey}
+ *
+ * Scoped like {@link generateCacheKey}: the security-context hash (or the
+ * integrator's serializer) and the cube-set key, so two contexts, or two
+ * contexts mapped to different cube sets, never share a probe.
+ */
+export function generateRefreshKeyCacheKey(
+  cubeName: string,
+  securityContext: SecurityContext,
+  config: CacheKeyConfig = {},
+  cubeSetKey?: string
+): string {
+  const prefix = config.keyPrefix ?? 'drizzle-cube:'
+  let key = `${prefix}refreshKey:${cubeName}`
+
+  if (config.includeSecurityContext !== false) {
+    const ctxString = config.securityContextSerializer
+      ? config.securityContextSerializer(securityContext)
+      : JSON.stringify(sortObject(securityContext))
+    key += `:ctx:${strongHash(ctxString)}`
+  }
+
+  if (cubeSetKey) {
+    key += `:cubes:${cubeSetKey}`
+  }
+
+  return key
+}
+
+/**
  * Normalize query for consistent hashing
  * Sorts arrays and object keys to ensure same query = same hash
  *

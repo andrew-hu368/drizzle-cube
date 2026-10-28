@@ -33,7 +33,17 @@ import type {
 } from '../types/index.js'
 import { resolveSqlExpression, resolveFilterFieldExpr } from '../cube-utils.js'
 import { hasFlowMode } from '../query-modes.js'
-import { combineWhere, resolveBindingKeyExpr, bindingKeyErrorsForPrefix, resolveTimeDimensionExpr, asGroupFilter, type WithSubquery } from './analysis-utils.js'
+import {
+  combineWhere,
+  resolveBindingKeyExpr,
+  bindingKeyErrorsForPrefix,
+  resolveTimeDimensionExpr,
+  asGroupFilter,
+  type WithSubquery,
+  addMemberOrMappingCubes,
+  addMemberCube,
+  addFilterCubes
+} from './analysis-utils.js'
 import { FilterBuilder } from './filter-builder.js'
 import { DateTimeBuilder } from './date-time-builder.js'
 
@@ -58,6 +68,20 @@ export class FlowQueryBuilder {
     this.databaseAdapter = databaseAdapter
     this.dateTimeBuilder = new DateTimeBuilder(databaseAdapter)
     this.filterBuilder = new FilterBuilder(databaseAdapter, this.dateTimeBuilder)
+  }
+
+  /**
+   * Cubes a flow reads: binding key, time dimension, event dimension and the
+   * starting step's filters. Flows bypass the logical plan, so this is their
+   * refresh-key dependency list.
+   */
+  cubesUsed(config: FlowQueryConfig): Set<string> {
+    const cubes = new Set<string>()
+    addMemberOrMappingCubes(config.bindingKey, cubes)
+    addMemberOrMappingCubes(config.timeDimension, cubes)
+    addMemberCube(config.eventDimension, cubes)
+    addFilterCubes(config.startingStep?.filter, cubes)
+    return cubes
   }
 
   /**

@@ -26,7 +26,17 @@ import type {
 } from '../types/index.js'
 import { resolveFilterFieldExpr } from '../cube-utils.js'
 import { hasFunnelMode } from '../query-modes.js'
-import { combineWhere, resolveBindingKeyExpr, bindingKeyErrorsForPrefix, resolveTimeDimensionExpr, asGroupFilter, type GroupFilterParts, type WithSubquery } from './analysis-utils.js'
+import {
+  combineWhere,
+  resolveBindingKeyExpr,
+  bindingKeyErrorsForPrefix,
+  resolveTimeDimensionExpr,
+  asGroupFilter,
+  type GroupFilterParts,
+  type WithSubquery,
+  addMemberOrMappingCubes,
+  addFilterCubes
+} from './analysis-utils.js'
 import { FilterBuilder } from './filter-builder.js'
 import { NO_VALUE_FILTER_OPERATORS } from './filter-operators.js'
 import { DateTimeBuilder } from './date-time-builder.js'
@@ -71,6 +81,22 @@ export class FunnelQueryBuilder {
    */
   hasFunnel(query: SemanticQuery): boolean {
     return hasFunnelMode(query)
+  }
+
+  /**
+   * Cubes a funnel reads: the binding-key and time-dimension cubes, every
+   * step's cube, and the cubes its step filters join in. Funnels bypass the
+   * logical plan, so this is their refresh-key dependency list.
+   */
+  cubesUsed(config: FunnelQueryConfig): Set<string> {
+    const cubes = new Set<string>()
+    addMemberOrMappingCubes(config.bindingKey, cubes)
+    addMemberOrMappingCubes(config.timeDimension, cubes)
+    for (const step of config.steps) {
+      if ('cube' in step && step.cube) cubes.add(step.cube)
+      addFilterCubes(step.filter, cubes)
+    }
+    return cubes
   }
 
   /**
