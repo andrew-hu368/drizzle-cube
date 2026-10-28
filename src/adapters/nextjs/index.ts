@@ -204,6 +204,8 @@ export interface CubeHandlers {
   dryRun: RouteHandler
   batch: RouteHandler
   explain: RouteHandler
+  /** `POST /refresh-keys`: composite refresh keys for change detection */
+  refreshKeys: RouteHandler
   mcpRpc?: RouteHandler
   agentChat?: RouteHandler
 }
@@ -468,6 +470,23 @@ export function createDryRunHandler(
       return httpHandler.handleDryRunGet(port, baseContext(request, context))
     }
     return NextResponse.json({ error: 'Method not allowed', valid: false }, { status: 405 })
+  }
+}
+
+/**
+ * Create refresh-keys handler - Composite refresh keys for a list of queries,
+ * for change detection (POST via the core). Mount it at `{basePath}/refresh-keys`.
+ */
+export function createRefreshKeysHandler(
+  options: NextAdapterOptions
+): RouteHandler {
+  const { httpHandler, corsHeaders, baseContext } = createNextCore(options)
+
+  return async function refreshKeysHandler(request: NextRequest, context?: RouteContext) {
+    if (request.method !== 'POST') {
+      return NextResponse.json(formatErrorResponse('Method not allowed - use POST', 405), { status: 405 })
+    }
+    return httpHandler.handleRefreshKeysPost(createNextPort(request, corsHeaders(request)), baseContext(request, context))
   }
 }
 
@@ -928,7 +947,8 @@ export function createCubeHandlers(
     sql: createSqlHandler(sharedOptions),
     dryRun: createDryRunHandler(sharedOptions),
     batch: createBatchHandler(sharedOptions),
-    explain: createExplainHandler(sharedOptions)
+    explain: createExplainHandler(sharedOptions),
+    refreshKeys: createRefreshKeysHandler(sharedOptions)
   }
 
   // Add MCP handlers if enabled

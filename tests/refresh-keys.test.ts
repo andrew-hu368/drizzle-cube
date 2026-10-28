@@ -361,4 +361,36 @@ describe.skipIf(!canWrite)('Refresh keys', () => {
       expect(calls.employees).toBe(2)
     })
   })
+
+  describe('result cache scoping and fingerprints', () => {
+    it('a refresh key scopes the result cache entry', async () => {
+      const cache = new MemoryCacheProvider({ defaultTtlMs: 60000 })
+      const layer = createLayer(allKeys, { cache: { provider: cache } })
+
+      expect((await layer.execute(employeesQuery, writeCtx, { refreshKey: 'a' })).cache).toBeUndefined()
+      expect((await layer.execute(employeesQuery, writeCtx, { refreshKey: 'a' })).cache?.hit).toBe(true)
+      expect((await layer.execute(employeesQuery, writeCtx, { refreshKey: 'b' })).cache).toBeUndefined()
+      expect((await layer.execute(employeesQuery, writeCtx)).cache).toBeUndefined()
+      await cache.close()
+    })
+
+    it('the same rows give the same fingerprint on a miss and a hit; changed rows change it', async () => {
+      const cache = new MemoryCacheProvider({ defaultTtlMs: 60000 })
+      const layer = createLayer(allKeys, { cache: { provider: cache } })
+      const query: SemanticQuery = { measures: ['Employees.count', 'Employees.totalSalary'] }
+
+      const miss = await layer.execute(query, writeCtx)
+      const hit = await layer.execute(query, writeCtx)
+      expect(miss.fingerprint).toMatch(/^[0-9a-f]{32}$/)
+      expect(hit.cache?.hit).toBe(true)
+      expect(hit.fingerprint).toBe(miss.fingerprint)
+
+      // A fresh execution of the same rows matches too
+      expect((await layer.execute(query, writeCtx, { maxAgeMs: 0 })).fingerprint).toBe(miss.fingerprint)
+
+      await insertEmployee({ name: 'Rk Fingerprint', salary: 5 })
+      expect((await layer.execute(query, writeCtx, { maxAgeMs: 0 })).fingerprint).not.toBe(miss.fingerprint)
+      await cache.close()
+    })
+  })
 })

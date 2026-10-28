@@ -421,6 +421,7 @@ export function formatCubeResponse(
     cache?: { hit: boolean; cachedAt?: string; ttlMs?: number; ttlRemainingMs?: number }
     warnings?: Array<{ code: string; message: string; severity: string; cubes?: string[]; measures?: string[]; suggestion?: string }>
     total?: number
+    fingerprint?: string
   },
   semanticLayer: SemanticLayerCompiler
 ) {
@@ -449,7 +450,9 @@ export function formatCubeResponse(
       // Include warnings if present (e.g., fan-out without dimensions)
       ...(result.warnings?.length && { warnings: result.warnings }),
       // Rows the query would return without limit/offset — only when asked for
-      ...(result.total !== undefined && { total: result.total })
+      ...(result.total !== undefined && { total: result.total }),
+      // Hash of the rows: unchanged across a cache miss and hit for the same rows
+      ...(result.fingerprint && { fingerprint: result.fingerprint })
     }],
     pivotQuery: {
       ...query,
@@ -551,7 +554,14 @@ export function formatErrorResponse(
  * Options for batch request handling: the result-cache execution options
  * (`skipCache`, `maxAgeMs`), applied to every query in the batch.
  */
-export type BatchRequestOptions = Pick<ExecutionOptions, 'skipCache' | 'maxAgeMs'>
+export type BatchRequestOptions = Pick<ExecutionOptions, 'skipCache' | 'maxAgeMs' | 'refreshKey'> & {
+  /**
+   * Per-query refresh keys, aligned with `queries`. An entry overrides the
+   * batch-wide `refreshKey` (the `x-refresh-key` header) for its query, so a
+   * batch can carry the different composite keys of several changed queries.
+   */
+  refreshKeys?: Array<string | undefined>
+}
 
 /**
  * Handle batch query requests - wrapper around existing single query execution
@@ -572,10 +582,12 @@ export async function handleBatchRequest(
   // Execute all queries in parallel using Promise.allSettled for partial success
   // This ensures one failing query doesn't affect others
   const settledResults = await Promise.allSettled(
-    queries.map(async (query) => {
+    queries.map(async (query, index) => {
       // Use EXISTING single query execution logic - NO CODE DUPLICATION
       // Pass cache options through so max-age / bypass apply to every query
-      const result = await semanticLayer.executeMultiCubeQuery(query, securityContext, options)
+      const { refreshKeys, ...executionOptions } = options ?? {}
+      const refreshKey = refreshKeys?.[index] ?? executionOptions.refreshKey
+      const result = await semanticLayer.executeMultiCubeQuery(query, securityContext, { ...executionOptions, refreshKey })
 
       // Use EXISTING response formatter - NO CODE DUPLICATION
       return formatCubeResponse(query, result, semanticLayer)

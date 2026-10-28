@@ -1,11 +1,13 @@
 # Refresh keys
 
-A refresh key is a cheap value that changes when a cube's data changes. A caller asks for the composite keys of
-the queries it shows and re-runs a query only when its key moved, instead of re-running every query on a timer
-(issue #271).
+A refresh key is a cheap value that changes when a cube's data changes. Clients poll
+`POST {basePath}/refresh-keys` with the queries on screen and refetch a query only when its key moved,
+instead of re-running every query on a timer. This is how `useCubeQuery(query, { subscribe: true })`,
+`CubeClient.subscribe` and portlets with refresh turned on stay current (issue #271).
 
-A refresh key says a query's result *may* have changed: it is per cube, so any write to a cube the query reads
-moves it, even one outside the query's filters.
+A refresh key says a query's result *may* have changed. Every `/load` and `/batch` result also carries a
+`fingerprint`, a hash of its rows, which says whether it *did* change. A client that gets back the same
+fingerprint keeps its previous data, so charts do not redraw.
 
 ## Declaring a refresh key
 
@@ -104,11 +106,55 @@ it('Orders refresh key is tenant-scoped', async () => {
 - **Failures.** A key that fails to evaluate is logged and makes `key` `null` for the queries that depend on that
   cube only. Clients fall back to refetching those queries every `checkAfterSeconds`.
 
-## From server code
+## Endpoint
 
-```ts
-const [{ key, checkAfterSeconds }] = await semanticLayer.getRefreshKeys([query], securityContext)
+```http
+POST /cubejs-api/v1/refresh-keys
+Content-Type: application/json
+
+{ "queries": [{ "measures": ["Orders.count"] }, { "measures": ["Users.count"], "dimensions": ["Orders.status"] }] }
 ```
 
-`getRefreshKeys` resolves the per-tenant cube set like `execute` (through `contextToCubeSetId`), takes each cube's
-refresh key from that set, and throws on an invalid query (an unknown member) as `execute` does.
+```json
+{ "keys": [
+  { "key": "6f1c…", "checkAfterSeconds": 30 },
+  { "key": null, "checkAfterSeconds": 10 }
+] }
+```
+
+The security context is resolved exactly as for `/load` (including `contextToCubeSetId`), queries are validated
+as for `/load` (an unknown member is the same 400), and the response is `Cache-Control: private, no-store`.
+Express, Fastify and Hono mount the route with the other endpoints. In Next.js export it from a route file:
+
+```ts
+// app/api/cubejs-api/v1/refresh-keys/route.ts
+import { createRefreshKeysHandler } from 'drizzle-cube/adapters/nextjs'
+export const POST = createRefreshKeysHandler(options)
+```
+
+or use `createCubeHandlers(options).refreshKeys`.
+
+From server code (alerts, warm-ups) call the compiler directly:
+
+```ts
+const [{ key }] = await semanticLayer.getRefreshKeys([query], securityContext)
+```
+
+## Sharing the refetch: `x-refresh-key`
+
+When a key changes, send the new key with the refetch: `x-refresh-key: <key>` on `/load` or `/batch`, or
+`ExecutionOptions.refreshKey` from server code. It is appended to the result cache key, so the first viewer in a
+context misses once and every other viewer who saw the same change hits the new entry. It only chooses among
+entries of the caller's own context, so it needs no trust. Adapters add `X-Refresh-Key` to the CORS allow list.
+
+A `/batch` call can carry a different key per query in its body, aligned with `queries`; an entry overrides the
+header for its query:
+
+```json
+{ "queries": [{ "measures": ["Orders.count"] }, { "measures": ["Users.count"] }], "refreshKeys": ["6f1c…", null] }
+```
+
+## Result fingerprints
+
+Every result carries `fingerprint`, a hash of its rows (and `total`), computed once per execution and stored
+with the cache entry. The same rows give the same fingerprint on a cache miss and on a hit.

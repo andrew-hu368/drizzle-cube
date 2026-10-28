@@ -7,7 +7,7 @@
  */
 
 import type { SecurityContext, SemanticQuery, QueryResult, CacheConfig, ExecutionOptions } from '../types/index.js'
-import { generateCacheKey } from '../cache-utils.js'
+import { generateCacheKey, strongHash } from '../cache-utils.js'
 
 export class QueryResultCache {
   constructor(private readonly cacheConfig?: CacheConfig) {}
@@ -19,10 +19,14 @@ export class QueryResultCache {
   generateKey(
     query: SemanticQuery,
     securityContext: SecurityContext,
-    cubeSetKey?: string
+    cubeSetKey?: string,
+    refreshKey?: string
   ): string | undefined {
     if (this.cacheConfig?.enabled !== false && this.cacheConfig?.provider) {
-      return generateCacheKey(query, securityContext, this.cacheConfig, cubeSetKey)
+      const key = generateCacheKey(query, securityContext, this.cacheConfig, cubeSetKey)
+      // A refresh key scopes the entry to one state of the query's cubes, so a
+      // change-triggered refetch misses once and is then shared.
+      return refreshKey ? `${key}:rk:${strongHash(refreshKey)}` : key
     }
     return undefined
   }
