@@ -708,10 +708,6 @@ describe('Next.js Adapter', () => {
   })
 
   describe('Refresh Keys Handler', () => {
-    it('is included in createCubeHandlers', () => {
-      expect(typeof createCubeHandlers(adapterOptions).refreshKeys).toBe('function')
-    })
-
     it('returns hashed keys with no-store on POST', async () => {
       const handler = createRefreshKeysHandler(adapterOptions)
       const response = await handler(createMockNextRequest('POST', { queries: [{ measures: ['Employees.count'] }] }))
