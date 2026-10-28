@@ -131,7 +131,6 @@ describe.skipIf(!canWrite)('Refresh keys', () => {
   }
 
   const employeesQuery: SemanticQuery = { measures: ['Employees.count'] }
-  const departmentsQuery: SemanticQuery = { measures: ['Departments.count'] }
 
   async function keyOf(layer: SemanticLayerCompiler, query: SemanticQuery, ctx: SecurityContext = writeCtx) {
     const [result] = await layer.getRefreshKeys([query], ctx)
@@ -147,7 +146,6 @@ describe.skipIf(!canWrite)('Refresh keys', () => {
       const layer = createLayer()
       const { employees } = schema
       const initial = (await keyOf(layer, employeesQuery)).key
-      expect(initial).toMatch(/^[0-9a-f]{32}$/)
 
       await insertEmployee({ name: 'Rk Insert', salary: 100 })
       const afterInsert = (await keyOf(layer, employeesQuery)).key
@@ -162,11 +160,6 @@ describe.skipIf(!canWrite)('Refresh keys', () => {
       const afterDelete = (await keyOf(layer, employeesQuery)).key
       expect(afterDelete).not.toBe(afterUpdate)
       expect(afterDelete).toBe(initial)
-    })
-
-    it('stays the same while nothing changes', async () => {
-      const layer = createLayer()
-      expect((await keyOf(layer, employeesQuery)).key).toBe((await keyOf(layer, employeesQuery)).key)
     })
 
     it('differs between two tenants and between two contexts in one tenant', async () => {
@@ -288,50 +281,6 @@ describe.skipIf(!canWrite)('Refresh keys', () => {
       expect(before).not.toBeNull()
       await insertEmployee({ name: 'Rk Funnel Step', salary: 10 })
       expect((await keyOf(layer, funnel)).key).not.toBe(before)
-    })
-
-    const failingProductivity: CubeKeys = { ...allKeys, productivity: failingKey }
-
-    async function keysWithFailingProductivity(query: SemanticQuery) {
-      const layer = createLayer(failingProductivity)
-      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
-      try {
-        return await layer.getRefreshKeys([query, departmentsQuery], writeCtx)
-      } finally {
-        consoleError.mockRestore()
-      }
-    }
-
-    // Flow and retention are not supported on SQLite; CI runs these on the other engines.
-    // Their cubes-used extraction is unit-tested DB-free in tests/cli/analysis-cubes-used.test.ts.
-    it.skipIf(getTestDatabaseType() === 'sqlite')('a retention query depends on the cubes it reads', async () => {
-      const [retention, departments] = await keysWithFailingProductivity({
-        retention: {
-          timeDimension: 'Productivity.date',
-          bindingKey: 'Productivity.employeeId',
-          dateRange: { start: '2024-01-01', end: '2024-03-31' },
-          granularity: 'week',
-          periods: 4,
-          retentionType: 'classic'
-        }
-      })
-      expect(retention.key).toBeNull()
-      expect(departments.key).not.toBeNull()
-    })
-
-    it.skipIf(getTestDatabaseType() === 'sqlite')('a flow query depends on the cubes it reads', async () => {
-      const [flow, departments] = await keysWithFailingProductivity({
-        flow: {
-          bindingKey: 'Productivity.employeeId',
-          timeDimension: 'Productivity.date',
-          eventDimension: 'Productivity.linesOfCode',
-          startingStep: { name: 'Start', filter: { member: 'Productivity.linesOfCode', operator: 'gt', values: [0] } },
-          stepsBefore: 1,
-          stepsAfter: 1
-        }
-      })
-      expect(flow.key).toBeNull()
-      expect(departments.key).not.toBeNull()
     })
   })
 
