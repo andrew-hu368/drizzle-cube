@@ -785,7 +785,6 @@
   "server.errors.unresolvedCubeRefs": "Unresolved cube references:\n{details}",
   "server.errors.cubeSetIdEmpty": "Cube set id must not be empty — the empty id is reserved for the base cube set",
   "server.errors.cubeSetNotFound": "No cube set registered for '{setId}'",
-  "server.errors.refreshKeyExpressionAndSql": "Cube '{cubeName}': refreshKey sets both expression and sql; use one",
   "server.errors.refreshKeyInvalidEvery": "Cube '{cubeName}': refreshKey.every '{every}' is not a duration such as '10 seconds' or '1 hour'",
   "server.errors.refreshKeyNotContextScoped": "Cube '{cubeName}': the refresh key evaluates identically under two different security contexts; filter it by the context (reuse ctx.baseQuery.where)",
   "server.errors.attributeIdRequired": "Attribute definitions must have a non-empty id",

@@ -785,7 +785,6 @@
   "server.errors.unresolvedCubeRefs": "Unresolved cube verwijzingen:\n{details}",
   "server.errors.cubeSetIdEmpty": "Cube set id mag niet leeg zijn — de lege id is gereserveerd voor de basis cube set",
   "server.errors.cubeSetNotFound": "Geen cube set geregistreerd voor '{setId}'",
-  "server.errors.refreshKeyExpressionAndSql": "Cube '{cubeName}': refreshKey bevat zowel expression als sql; gebruik er één",
   "server.errors.refreshKeyInvalidEvery": "Cube '{cubeName}': refreshKey.every '{every}' is geen duur zoals '10 seconds' of '1 hour'",
   "server.errors.refreshKeyNotContextScoped": "Cube '{cubeName}': de refresh key geeft dezelfde uitkomst onder twee verschillende security contexts; filter op de context (hergebruik ctx.baseQuery.where)",
   "server.errors.attributeIdRequired": "Attribuutdefinities moeten een niet-lege id hebben",

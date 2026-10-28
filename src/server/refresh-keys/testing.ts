@@ -1,7 +1,7 @@
 /**
  * Test helper for key queries (`refreshKey.sql`), whose author owns the
- * tenant filter. Ships with the key query form so the escape hatch is never
- * available without its check.
+ * tenant filter. Ships with the key query so it is never available without
+ * its check.
  */
 
 import type { SemanticLayerCompiler } from '../compiler.js'
@@ -15,9 +15,7 @@ import { t } from '../../i18n/runtime.js'
  * leak another tenant's write timing. Use it in your own test suite with two
  * contexts that should not see each other's rows.
  *
- * A key expression is selected over the cube's own base query and always
- * passes; a cube with only `every` (a time bucket) has nothing to scope and
- * passes too.
+ * A cube with only `every` (a time bucket) has nothing to scope and passes.
  */
 function bigintSafe(_key: string, value: unknown): unknown {
   return typeof value === 'bigint' ? value.toString() : value

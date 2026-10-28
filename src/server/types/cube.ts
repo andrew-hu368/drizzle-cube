@@ -118,29 +118,24 @@ export interface RefreshKeyQueryContext extends QueryContext {
  * changes. Clients poll `/refresh-keys` and refetch a query only when the key
  * of a cube it depends on moved.
  *
- * Set at most one of `expression` and `sql`. Without either, `every` makes the
- * key the current time bucket. A cube with no `refreshKey` gets the default
- * time bucket: 10 seconds, or 2 minutes on Snowflake and Databend.
+ * Without `sql`, `every` makes the key the current time bucket. A cube with no
+ * `refreshKey` gets the default time bucket: 10 seconds, or 2 minutes on
+ * Snowflake and Databend.
  */
 export interface CubeRefreshKey {
   /**
-   * Key expression (preferred): one aggregate selected over this cube's base
-   * query, so the cube's security filter applies and the key cannot see other
-   * tenants' rows. Pick something that moves on insert, update and delete, e.g.
-   * sql`count(*) + coalesce(sum(${orders.version}), 0)` or `max(updated_at)`.
-   */
-  expression?: (ctx: QueryContext) => SQL
-  /**
-   * Key query (Cube.js parity): a standalone single-row, single-column query.
-   * Unlike Cube.js, where `refresh_key.sql` is a SQL string, this is a function
+   * Key query (Cube.js parity): a single-row, single-column query. Unlike
+   * Cube.js, where `refresh_key.sql` is a SQL string, this is a function
    * returning Drizzle `SQL`. Its author must scope it to the context; reuse
    * `ctx.baseQuery.where` and check it with `assertRefreshKeyIsContextScoped`.
+   * Pick something that moves on insert, update and delete, e.g.
+   * sql`select max(${orders.updatedAt}) from ${orders} where ${ctx.baseQuery.where}`.
    */
   sql?: (ctx: RefreshKeyQueryContext) => SQL
   /**
-   * Cube.js duration (`'10 seconds'`, `'1 minute'`). With `expression` or `sql`,
-   * the minimum interval between evaluations of the key. Alone, the key is the
-   * current time bucket of this length.
+   * Cube.js duration (`'10 seconds'`, `'1 minute'`). With `sql`, the minimum
+   * interval between evaluations of the key. Alone, the key is the current
+   * time bucket of this length.
    */
   every?: string
 }

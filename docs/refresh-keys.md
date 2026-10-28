@@ -19,26 +19,24 @@ export const ordersCube = defineCube('Orders', {
     where: eq(orders.organisationId, ctx.securityContext.organisationId)
   }),
   refreshKey: {
-    // Selected over this cube's base query: the WHERE above applies, so the key
-    // only sees the caller's rows. Pick something that moves on insert, update and delete.
-    expression: () => sql`count(*) + coalesce(sum(${orders.version}), 0)`,
+    // Reuse the cube's WHERE so the key only sees the caller's rows.
+    // Pick something that moves on insert, update and delete.
+    sql: (ctx) => sql`select count(*) + coalesce(sum(${orders.version}), 0) from ${orders} where ${ctx.baseQuery.where}`,
     every: '30 seconds'
   },
   // dimensions, measures, joins ...
 })
 ```
 
-`refreshKey` takes at most one of `expression` and `sql`, plus an optional `every`:
+`refreshKey` takes an optional `sql` and an optional `every`:
 
-| Form | Meaning |
+| Field | Meaning |
 |---|---|
-| `expression: (ctx) => SQL` | **Key expression (recommended).** One aggregate, selected over the cube's base query (`from`, `joins`, `where`), so the cube's security filter applies and you cannot forget it. |
-| `sql: (ctx) => SQL` | **Key query** (Cube.js parity). A standalone query that returns one row with one column. You scope it to the context yourself; `ctx.baseQuery` is the cube's resolved base query, so reuse `ctx.baseQuery.where`. |
-| `every: '<n> <unit>'` | A Cube.js duration (`second`, `minute`, `hour`, `day`, `week`, singular or plural). With `expression` or `sql`, the minimum time between evaluations. Alone, the key is the current time bucket of that length: "assume the data changes this often". |
+| `sql: (ctx) => SQL` | **Key query** (Cube.js parity). A query that returns one row with one column. You scope it to the context yourself; `ctx.baseQuery` is the cube's resolved base query (`from`, `joins`, `where`), so reuse `ctx.baseQuery.where`, and check it with `assertRefreshKeyIsContextScoped`. |
+| `every: '<n> <unit>'` | A Cube.js duration (`second`, `minute`, `hour`, `day`, `week`, singular or plural). With `sql`, the minimum time between evaluations. Alone, the key is the current time bucket of that length: "assume the data changes this often". |
 
 A cube without `refreshKey` gets Cube.js's default: a 10-second time bucket, or 2 minutes on Snowflake and
-Databend. `defineCube` (and `registerCube`) throw when both `expression` and `sql` are set, or when `every` is
-not a valid duration.
+Databend. `defineCube` (and `registerCube`) throw when `every` is not a valid duration.
 
 ### Coming from Cube.js: `sql` is a function, not a string
 
@@ -71,15 +69,12 @@ defineCube('Orders', {
 ```
 
 Note the `where`: the Cube.js key above ignores the tenant, so every tenant's dashboards would refetch on any
-tenant's write and could time each other's writes. Prefer a key expression, which cannot make that mistake:
-
-```ts
-refreshKey: { expression: () => sql`max(${orders.updatedAt})`, every: '1 minute' }
-```
+tenant's write and could time each other's writes. Always filter by `ctx.baseQuery.where` (or your own context
+filter), and check it with the helper below.
 
 ### Checking a key query: `assertRefreshKeyIsContextScoped`
 
-A key query ships with a test helper. It evaluates the cube's key under two security contexts and throws when
+The key query ships with a test helper. It evaluates the cube's key under two security contexts and throws when
 both the value and the query it ran (SQL text and bound parameters) are identical:
 
 ```ts

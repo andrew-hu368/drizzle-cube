@@ -113,14 +113,15 @@ describe.skipIf(!canWrite)('Refresh keys', () => {
   }
 
   const employeesKey: CubeRefreshKey = {
-    expression: () => sql`count(*) + coalesce(sum(${schema.employees.salary}), 0)`
+    sql: (ctx) => sql`select count(*) + coalesce(sum(${schema.employees.salary}), 0) from ${schema.employees} where ${ctx.baseQuery.where}`
   }
   const departmentsKey: CubeRefreshKey = {
-    expression: () => sql`count(*) + coalesce(sum(${schema.departments.budget}), 0)`
+    sql: (ctx) => sql`select count(*) + coalesce(sum(${schema.departments.budget}), 0) from ${schema.departments} where ${ctx.baseQuery.where}`
   }
   const productivityKey: CubeRefreshKey = {
-    expression: () => sql`count(*)`
+    sql: (ctx) => sql`select count(*) from ${schema.productivity} where ${ctx.baseQuery.where}`
   }
+  const failingKey: CubeRefreshKey = { sql: () => sql`select no_such_column_271` }
   const allKeys: CubeKeys = { employees: employeesKey, departments: departmentsKey, productivity: productivityKey }
 
   function createLayer(keys: CubeKeys = allKeys, options: ConstructorParameters<typeof SemanticLayerCompiler>[0] = {}) {
@@ -141,7 +142,7 @@ describe.skipIf(!canWrite)('Refresh keys', () => {
     await dbExecutor.db.insert(schema.employees).values({ organisationId: WRITE_ORG, ...values })
   }
 
-  describe('key expression', () => {
+  describe('key query', () => {
     it('changes after an insert, an update and a delete', async () => {
       const layer = createLayer()
       const { employees } = schema
@@ -185,32 +186,18 @@ describe.skipIf(!canWrite)('Refresh keys', () => {
     })
   })
 
-  describe('key query (sql)', () => {
-    const scopedKeyQuery: CubeRefreshKey = {
-      sql: (ctx) => sql`select count(*) from ${schema.departments} where ${ctx.baseQuery.where}`
-    }
+  describe('two-context helper', () => {
     const unscopedKeyQuery: CubeRefreshKey = {
       sql: () => sql`select count(*) from ${schema.departments}`
     }
 
-    it('changes after an insert and differs between tenants', async () => {
-      const layer = createLayer({ ...allKeys, departments: scopedKeyQuery })
-      const before = (await keyOf(layer, departmentsQuery)).key
-      await dbExecutor.db.insert(schema.departments).values({ name: 'Rk Dept', organisationId: WRITE_ORG })
-      expect((await keyOf(layer, departmentsQuery)).key).not.toBe(before)
-
-      const tenant1 = (await keyOf(layer, departmentsQuery, org1)).key
-      const tenant2 = (await keyOf(layer, departmentsQuery, org2)).key
-      expect(tenant1).not.toBe(tenant2)
-    })
-
-    it('the two-context helper passes a scoped key query and a key expression', async () => {
-      const layer = createLayer({ ...allKeys, departments: scopedKeyQuery })
+    it('passes a scoped key query and a time bucket', async () => {
+      const layer = createLayer({ ...allKeys, employees: { every: '1 minute' } })
       await expect(assertRefreshKeyIsContextScoped(layer, 'Departments', [org1, org2])).resolves.toBeUndefined()
       await expect(assertRefreshKeyIsContextScoped(layer, 'Employees', [org1, org2])).resolves.toBeUndefined()
     })
 
-    it('the two-context helper fails an unscoped key query', async () => {
+    it('fails an unscoped key query', async () => {
       const layer = createLayer({ ...allKeys, departments: unscopedKeyQuery })
       await expect(assertRefreshKeyIsContextScoped(layer, 'Departments', [org1, org2]))
         .rejects.toThrow(/Departments/)
@@ -289,7 +276,7 @@ describe.skipIf(!canWrite)('Refresh keys', () => {
       expect((await keyOf(layer, funnel)).key).not.toBe(before)
     })
 
-    const failingProductivity: CubeKeys = { ...allKeys, productivity: { expression: () => sql`no_such_column_271` } }
+    const failingProductivity: CubeKeys = { ...allKeys, productivity: failingKey }
 
     async function keysWithFailingProductivity(query: SemanticQuery) {
       const layer = createLayer(failingProductivity)
@@ -336,7 +323,7 @@ describe.skipIf(!canWrite)('Refresh keys', () => {
 
   describe('failures and validation', () => {
     it('a failing cube key yields null only for the queries that depend on it', async () => {
-      const layer = createLayer({ ...allKeys, departments: { expression: () => sql`no_such_column_271` } })
+      const layer = createLayer({ ...allKeys, departments: failingKey })
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
 
       const [employeesOnly, joined] = await layer.getRefreshKeys([
@@ -364,9 +351,9 @@ describe.skipIf(!canWrite)('Refresh keys', () => {
         ...allKeys,
         employees: {
           every: '1 minute',
-          expression: () => {
+          sql: (ctx) => {
             calls.employees++
-            return sql`count(*)`
+            return sql`select count(*) from ${schema.employees} where ${ctx.baseQuery.where}`
           }
         }
       }

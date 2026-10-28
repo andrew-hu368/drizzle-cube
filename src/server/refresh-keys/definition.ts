@@ -23,14 +23,11 @@ export function defaultRefreshKeyEverySeconds(engineType: EngineType | undefined
 }
 
 /**
- * Throw when a refresh key is malformed: both `expression` and `sql`, or an
- * `every` that is not a Cube.js duration. A missing refresh key is valid.
+ * Throw when a refresh key's `every` is not a Cube.js duration. A missing
+ * refresh key is valid.
  */
 export function validateCubeRefreshKey(cubeName: string, refreshKey: CubeRefreshKey | undefined): void {
   if (!refreshKey) return
-  if (refreshKey.expression && refreshKey.sql) {
-    throw new Error(t('server.errors.refreshKeyExpressionAndSql', { cubeName }))
-  }
   if (refreshKey.every !== undefined && parseDurationSeconds(refreshKey.every) === undefined) {
     throw new Error(t('server.errors.refreshKeyInvalidEvery', { cubeName, every: refreshKey.every }))
   }
@@ -42,7 +39,7 @@ export function refreshKeyEverySeconds(cube: Cube, defaultSeconds: number): numb
   return (every !== undefined ? parseDurationSeconds(every) : undefined) ?? defaultSeconds
 }
 
-/** Whether the cube's key is evaluated against the database (an expression or a key query). */
+/** Whether the cube's key is evaluated against the database (a key query). */
 export function hasEvaluatedRefreshKey(cube: Cube): boolean {
-  return Boolean(cube.refreshKey?.expression || cube.refreshKey?.sql)
+  return Boolean(cube.refreshKey?.sql)
 }

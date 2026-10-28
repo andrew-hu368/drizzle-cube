@@ -3,7 +3,7 @@
  *
  * A query's composite key is a hash of the refresh keys of every cube it reads
  * (its dependent cubes), so it changes when any of them changes. Each cube key
- * is evaluated once per call, and a key expression or key query is cached per
+ * is evaluated once per call, and a key query is cached per
  * context key and cube-set key for `every`, so viewers sharing a context run
  * one probe per interval. A cube key that fails makes only the queries that
  * depend on it `null`.
@@ -42,7 +42,7 @@ export interface RefreshKeyEnvironment {
   defaultEverySeconds: number
   /** Validate a query and list the cubes it reads (throws on an invalid query) */
   dependentCubes(query: SemanticQuery): string[]
-  /** Evaluate a cube's key expression or key query */
+  /** Evaluate a cube's key query */
   evaluate(cube: Cube): Promise<unknown>
   /** Error sink for a failing cube key */
   onError(cubeName: string, error: unknown): void

@@ -47,7 +47,6 @@ import { FlowQueryBuilder } from './builders/flow-query-builder.js'
 import { RetentionQueryBuilder } from './builders/retention-query-builder.js'
 import { LogicalPlanBuilder, IdentityOptimiser, collectPlanCubeNames } from './logical-plan/index.js'
 import { analyzeCubeUsage } from './logical-plan/planner-utils.js'
-import { applyBaseJoins } from './physical-plan/semi-join.js'
 import type { PlanOptimiser, OptimiserEngineType, QueryNode } from './logical-plan/index.js'
 import { DrizzlePlanBuilder } from './physical-plan/index.js'
 import { t } from '../i18n/runtime.js'
@@ -293,18 +292,18 @@ export class QueryExecutor {
   }
 
   /**
-   * Evaluate a cube's key expression or key query under the security context,
-   * inside the RLS transaction when one is configured. Returns the single
-   * value the key selects (undefined when it returned no row).
+   * Evaluate a cube's key query under the security context, inside the RLS
+   * transaction when one is configured. Returns the first column of the first
+   * row (undefined when it returned no row).
    */
   async evaluateRefreshKey(cube: Cube, securityContext: SecurityContext): Promise<unknown> {
     return this.withRLSContext(securityContext, async () => {
       const probe = this.buildRefreshKeyProbe(cube, securityContext)
       if (!probe) return undefined
-      const rows = await this.dbExecutor.execute<Array<Record<string, unknown>>>(probe.query)
+      const rows = await this.dbExecutor.execute<Array<Record<string, unknown>>>(probe)
       const row = Array.isArray(rows) ? rows[0] : undefined
       if (!row || typeof row !== 'object') return undefined
-      return probe.kind === 'expression' ? row.value : Object.values(row)[0]
+      return Object.values(row)[0]
     })
   }
 
@@ -316,34 +315,15 @@ export class QueryExecutor {
   renderRefreshKey(cube: Cube, securityContext: SecurityContext): { sql: string; params: unknown[] } | undefined {
     const probe = this.buildRefreshKeyProbe(cube, securityContext)
     if (!probe) return undefined
-    if (probe.kind === 'expression') {
-      const { sql: text, params } = probe.query.toSQL()
-      return { sql: text, params }
-    }
     const db: unknown = this.dbExecutor.db
-    return hasSqlDialect(db) ? db.dialect.sqlToQuery(probe.query) : undefined
+    return hasSqlDialect(db) ? db.dialect.sqlToQuery(probe) : undefined
   }
 
-  private buildRefreshKeyProbe(
-    cube: Cube,
-    securityContext: SecurityContext
-  ): { kind: 'expression'; query: any } | { kind: 'sql'; query: SQL } | undefined {
-    const refreshKey = cube.refreshKey
+  private buildRefreshKeyProbe(cube: Cube, securityContext: SecurityContext): SQL | undefined {
+    const keyQuery = cube.refreshKey?.sql
+    if (!keyQuery) return undefined
     const context: QueryContext = { ...this.createQueryContext(securityContext), cube }
-    const baseQuery = cube.sql(context)
-
-    if (refreshKey?.expression) {
-      let query = context.db
-        .select({ value: refreshKey.expression(context) })
-        .from(baseQuery.from)
-      query = applyBaseJoins(query, baseQuery)
-      if (baseQuery.where) query = query.where(baseQuery.where)
-      return { kind: 'expression', query }
-    }
-    if (refreshKey?.sql) {
-      return { kind: 'sql', query: refreshKey.sql({ ...context, baseQuery }) }
-    }
-    return undefined
+    return keyQuery({ ...context, baseQuery: cube.sql(context) })
   }
 
   /**

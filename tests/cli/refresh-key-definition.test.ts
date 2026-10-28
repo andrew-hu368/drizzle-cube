@@ -21,16 +21,10 @@ function cube(refreshKey: CubeRefreshKey | undefined): Omit<Cube, 'name'> {
 }
 
 describe('refresh key definition', () => {
-  it('accepts a key expression, a key query, `every` alone and no key', () => {
-    expect(() => defineCube('A', cube({ expression: () => sql`count(*)`, every: '1 minute' }))).not.toThrow()
+  it('accepts a key query, `every` alone and no key', () => {
     expect(() => defineCube('B', cube({ sql: () => sql`select 1`, every: '30 seconds' }))).not.toThrow()
     expect(() => defineCube('C', cube({ every: '2 hours' }))).not.toThrow()
     expect(() => defineCube('D', cube(undefined))).not.toThrow()
-  })
-
-  it('rejects both expression and sql', () => {
-    expect(() => defineCube('Both', cube({ expression: () => sql`count(*)`, sql: () => sql`select 1` })))
-      .toThrow(/Both.*expression.*sql/)
   })
 
   it('rejects an invalid duration', () => {
