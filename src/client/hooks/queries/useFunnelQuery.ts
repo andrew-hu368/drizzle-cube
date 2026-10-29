@@ -423,7 +423,7 @@ export function useFunnelQuery(
   }, [refetchMaxAge, serverQuery, skip, enabled, result, currentQueryKey, refetchQuery])
 
   // Subscription: refetch when the funnel's refresh key changes
-  const { getCheckedAt } = useQuerySubscription({
+  const getCheckedAt = useQuerySubscription({
     queries: serverQuery ? (serverQuery as unknown as CubeQuery) : null,
     subscribe,
     active: !manualRefresh && shouldExecute && enabled,

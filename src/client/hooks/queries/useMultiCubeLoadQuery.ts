@@ -291,7 +291,7 @@ export function useMultiCubeLoadQuery(
   }, [refetchMaxAge, serverConfig, skip, enabled, refetchQuery])
 
   // Subscription: refetch when any of the queries' refresh keys changes
-  const { getCheckedAt } = useQuerySubscription({
+  const getCheckedAt = useQuerySubscription({
     queries: serverConfig?.queries ?? null,
     subscribe,
     active: !skip && enabled && !!serverConfig,

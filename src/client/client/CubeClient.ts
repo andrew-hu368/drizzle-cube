@@ -11,7 +11,7 @@ import type {
   ExplainResult,
   ExplainOptions
 } from '../types.js'
-import { maxAgeHeaders, refreshKeyHeaders, resolveMaxAgeSeconds, type MaxAgeOptions } from './maxAge.js'
+import { maxAgeHeaders, resolveMaxAgeSeconds, type MaxAgeOptions } from './maxAge.js'
 import { resolveSubscribeIntervalSeconds, SUBSCRIBE_INTERVAL_SECONDS } from './subscription.js'
 import { RefreshKeyCoordinator, type RefreshKeyResult, type RefreshKeyWatch } from './RefreshKeyCoordinator.js'
 
@@ -104,14 +104,16 @@ export class CubeClient {
     const queryParam = encodeURIComponent(queryString)
     const url = `${this.apiUrl}/load?query=${queryParam}`
 
-    // Build headers, adding the max-age headers when one was asked for
+    // Build headers, adding the max-age headers when one was asked for and the
+    // refresh key when the query is watched
+    const refreshKey = this.refreshKeyCoordinator?.currentKey(query)
     const requestHeaders: Record<string, string> = {
       // Remove Content-Type for GET request
       ...Object.fromEntries(
         Object.entries(this.headers).filter(([key]) => key !== 'Content-Type')
       ),
       ...maxAgeHeaders(resolveMaxAgeSeconds(options)),
-      ...refreshKeyHeaders(this.refreshKeyCoordinator?.currentKey(query))
+      ...(refreshKey && { 'X-Refresh-Key': refreshKey })
     }
 
     const response = await fetch(url, {

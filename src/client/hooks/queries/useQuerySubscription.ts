@@ -27,20 +27,17 @@ export interface UseQuerySubscriptionParams {
   refetch: (options?: MaxAgeOptions) => void
 }
 
-export interface QuerySubscriptionState {
-  /**
-   * When the server last confirmed this hook's keys (ISO), while subscribed. A
-   * getter, so a check does not re-render: read it on a render you have anyway.
-   */
-  getCheckedAt: () => string | undefined
-}
-
+/**
+ * Returns a getter for when the server last confirmed this hook's keys (ISO),
+ * while subscribed. A getter, so a check does not re-render: read it on a
+ * render you have anyway.
+ */
 export function useQuerySubscription({
   queries,
   subscribe,
   active,
   refetch
-}: UseQuerySubscriptionParams): QuerySubscriptionState {
+}: UseQuerySubscriptionParams): () => string | undefined {
   const { cubeApi } = useCubeApi()
   const { features } = useCubeFeatures()
   const checkedAtRef = useRef<number | undefined>(undefined)
@@ -90,5 +87,5 @@ export function useQuerySubscription({
     }
   }, [cubeApi, queriesKey, intervalSeconds])
 
-  return { getCheckedAt }
+  return getCheckedAt
 }

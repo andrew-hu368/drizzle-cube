@@ -347,7 +347,7 @@ export function useFlowQuery(
   }, [refetchMaxAge, debouncedQuery, isValid, skip, enabled, currentQueryKey, refetchQuery])
 
   // Subscription: refetch when the query's refresh key changes
-  const { getCheckedAt } = useQuerySubscription({
+  const getCheckedAt = useQuerySubscription({
     queries: debouncedQuery ? (debouncedQuery as unknown as CubeQuery) : null,
     subscribe,
     active: !manualRefresh && shouldExecute && enabled,

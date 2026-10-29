@@ -343,7 +343,7 @@ export function useCubeLoadQuery(
 
   // Subscription: watch the query's refresh key while the query runs, and
   // refetch when it changes. A new query watches the new key.
-  const { getCheckedAt } = useQuerySubscription({
+  const getCheckedAt = useQuerySubscription({
     queries: serverQuery,
     subscribe,
     active: !manualRefresh && shouldExecute && enabled,

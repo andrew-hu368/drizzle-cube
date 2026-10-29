@@ -49,11 +49,6 @@ export function maxAgeHeaders(maxAgeSeconds: number | undefined): Record<string,
   return { 'X-Cache-Max-Age': String(maxAgeSeconds) }
 }
 
-/** Request header for a refresh key, when there is one. */
-export function refreshKeyHeaders(refreshKey: string | undefined): Record<string, string> {
-  return refreshKey ? { 'X-Refresh-Key': refreshKey } : {}
-}
-
 /**
  * Keep the stricter of two max-ages (`bustCache` resolves to max-age 0) and
  * the newest refresh key. Returns `current` itself (same identity) unless
