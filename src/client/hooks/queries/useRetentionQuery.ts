@@ -12,6 +12,9 @@ import { useCubeFeatures } from '../../providers/CubeFeaturesProvider.js'
 import { useDebounceQuery } from '../useDebounceQuery.js'
 import { stableStringify } from '../../shared/queryKey.js'
 import type { CubeQuery } from '../../types.js'
+import { keepUnchangedResult } from '../../client/resultFingerprint.js'
+import { useQuerySubscription } from './useQuerySubscription.js'
+import type { SubscribeOption } from '../../client/subscription.js'
 import { createRefetchMaxAgeTracker, type MaxAgeOptions } from '../../client/maxAge.js'
 import { resultSetComputedAt } from '../../utils/freshness.js'
 import type {
@@ -41,6 +44,11 @@ export interface UseRetentionQueryOptions {
   onError?: (error: Error) => void
   /** Function to resolve field names to human-readable display labels */
   getFieldLabel?: (fieldName: string) => string
+  /**
+   * Keep the query current: refetch when its refresh key changes (see
+   * `useCubeLoadQuery`'s `subscribe`). `{ intervalSeconds }` checks less often.
+   */
+  subscribe?: SubscribeOption
 }
 
 /**
@@ -72,6 +80,8 @@ export interface UseRetentionQueryResult {
   cacheInfo?: { hit: true; cachedAt: string; ttlMs: number; ttlRemainingMs: number } | null
   /** When the rows were computed on the server (cache time on a hit, else response time) */
   computedAt?: string | null
+  /** When the server last confirmed the query's refresh key (ISO), while subscribed. A getter: a check does not re-render */
+  getCheckedAt?: () => string | undefined
 
   /** Execute the query (for manual refresh mode) */
   execute: (options?: MaxAgeOptions) => Promise<RetentionChartData | null>
@@ -236,7 +246,7 @@ export function useRetentionQuery(
   serverQuery: ServerRetentionQuery | null,
   options: UseRetentionQueryOptions = {}
 ): UseRetentionQueryResult {
-  const { skip = false, enabled = true, debounceMs = DEFAULT_DEBOUNCE_MS, onComplete, onError, getFieldLabel } = options
+  const { skip = false, enabled = true, debounceMs = DEFAULT_DEBOUNCE_MS, onComplete, onError, getFieldLabel, subscribe } = options
 
   const { cubeApi } = useCubeApi()
   const queryClient = useQueryClient()
@@ -314,6 +324,7 @@ export function useRetentionQuery(
         executionTime,
         cacheInfo,
         computedAt: resultSetComputedAt(resultSet),
+        fingerprint: resultSet.fingerprint?.(),
       }
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error))
@@ -327,6 +338,8 @@ export function useRetentionQuery(
     queryKey,
     queryFn: runRetentionQuery,
     enabled: shouldExecute && enabled,
+    // Same result fingerprint as the data shown: keep that data
+    structuralSharing: keepUnchangedResult,
     // 1 minute cache; a max-age recorded while skipped or disabled makes the cached result
     // stale, so the query fetches with it once enabled
     staleTime: () => (refetchMaxAge.hasPendingMaxAge() ? 0 : 60000),
@@ -369,21 +382,19 @@ export function useRetentionQuery(
   }, [rawBindingKeyField, getFieldLabel, serverQuery?.retention?.bindingKey])
 
   // Transform server result to chart data
+  // Not keyed on fetch status, so a refetch that kept the data (same fingerprint) keeps the chart data
+  const resultRows = queryResult.data?.rawData
   const chartData = useMemo<RetentionChartData | null>(() => {
-    if (!queryResult.data?.rawData) return null
-    const result = transformRetentionResult(
-      queryResult.data.rawData,
-      granularity,
-      bindingKeyLabel
-    )
+    if (!resultRows) return null
+    return transformRetentionResult(resultRows, granularity, bindingKeyLabel)
+  }, [resultRows, granularity, bindingKeyLabel])
 
-    // Call completion callback
-    if (queryResult.isSuccess && !queryResult.isFetching) {
-      onComplete?.(result)
+  // Call completion callback once the fetch settles
+  useEffect(() => {
+    if (chartData && queryResult.isSuccess && !queryResult.isFetching) {
+      onComplete?.(chartData)
     }
-
-    return result
-  }, [queryResult.data, queryResult.isSuccess, queryResult.isFetching, onComplete, granularity, bindingKeyLabel])
+  }, [chartData, queryResult.isSuccess, queryResult.isFetching, onComplete])
 
   // Execute function for manual refresh mode. `{ maxAgeSeconds }` accepts a
   // cached server result at most that old; `{ bustCache: true }` is max-age 0.
@@ -413,6 +424,14 @@ export function useRetentionQuery(
     if (debouncedQuery && !skip && enabled) void refetchQuery({ cancelRefetch })
   }, [refetchMaxAge, debouncedQuery, skip, enabled, refetchQuery])
 
+  // Subscription: refetch when the query's refresh key changes
+  const getCheckedAt = useQuerySubscription({
+    queries: debouncedQuery ? (debouncedQuery as unknown as CubeQuery) : null,
+    subscribe,
+    active: !manualRefresh && shouldExecute && enabled,
+    refetch
+  })
+
   // Determine status
   const status = useMemo(() => {
     if (queryResult.isError) return 'error' as const
@@ -431,6 +450,7 @@ export function useRetentionQuery(
     error: queryResult.error as Error | null,
     cacheInfo: queryResult.data?.cacheInfo ?? null,
     computedAt: queryResult.data?.computedAt ?? null,
+    getCheckedAt,
     execute,
     refetch,
     needsRefresh,

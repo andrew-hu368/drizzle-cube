@@ -158,3 +158,27 @@ header for its query:
 
 Every result carries `fingerprint`, a hash of its rows (and `total`), computed once per execution and stored
 with the cache entry. The same rows give the same fingerprint on a cache miss and on a hit.
+
+## Client
+
+The client uses all of the above without extra configuration:
+
+- `useCubeQuery(query, { subscribe: true })`, `CubeClient.subscribe(query, options, callback)` and dashboard
+  portlets with a refresh interval (`features.refresh`) watch their queries' keys through one
+  `RefreshKeyCoordinator` per `CubeClient`. Each watcher checks once when it starts, then every interval (10
+  seconds for `subscribe`, floored by `features.refresh.minIntervalSeconds`; the portlet interval for a
+  portlet), raised to the server's `checkAfterSeconds`. Checks are aligned to the clock, so watchers on the
+  same interval check together, and checks that land together share one `/refresh-keys` call. The first key
+  seen is only recorded.
+- When a query's key changes, only that query refetches, with the new key (`X-Refresh-Key` on `/load`,
+  `refreshKeys` in the `/batch` body), so portlets that change together still share one batch call.
+- A refetch whose result has the same `fingerprint` as the data on screen keeps that data (the same object), so
+  the chart does not redraw, and computed-at stays at the original computation. The `CubeClient.subscribe`
+  callback is not called for it. A result without a fingerprint is always delivered.
+- The portlet header shows "checked for changes at"; the stale badge counts from the later of computed-at and
+  checked-at, so a portlet whose data simply has not changed does not turn stale.
+- Pausing (dashboard or portlet), edit mode, a hidden tab with `pauseWhenHidden`, and `manualRefresh` stop a
+  portlet's watch. Its last key is remembered, so when it resumes the first check refetches only if the data
+  changed meanwhile.
+- Against a server without `/refresh-keys`, or while a key is `null`, a subscription refetches every interval
+  with max-age equal to the interval, as before refresh keys existed.

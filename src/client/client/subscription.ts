@@ -1,38 +1,34 @@
 /**
- * Subscription scheduling: when a subscribed query refetches.
- *
- * A subscription (`useCubeQuery(query, { subscribe: true })` or
- * `CubeClient.subscribe`) keeps a query current. In Phase 0 it refetches on a
- * fixed interval with max-age equal to that interval, so subscribers in one
- * security context share one server execution per interval.
- *
- * This module is the one place both subscribers ask "when do I refetch?".
- * Swapping the interval for change detection (refresh keys) replaces
- * `scheduleSubscription` and leaves the hook and client APIs alone.
+ * Subscription options: how often a subscribed query
+ * (`useCubeQuery(query, { subscribe: true })`, `CubeClient.subscribe`, or a
+ * portlet with refresh on) checks its refresh keys. The checking itself is the
+ * client's `RefreshKeyCoordinator`.
  */
 
 /** Cube.js's default refresh cadence for a subscription, in seconds. */
 export const SUBSCRIBE_INTERVAL_SECONDS = 10
 
 /**
- * A subscription's refetch interval in whole seconds: the default 10, raised
- * to `minIntervalSeconds` when that is larger.
+ * A subscription's interval in whole seconds: the default 10, raised to
+ * `requestedSeconds` or `minIntervalSeconds` when either is larger. Keys are
+ * checked no more often than this, and it is the refetch interval when keys
+ * are unavailable.
  */
-export function resolveSubscribeIntervalSeconds(minIntervalSeconds?: number): number {
-  if (minIntervalSeconds === undefined || !Number.isFinite(minIntervalSeconds)) {
-    return SUBSCRIBE_INTERVAL_SECONDS
-  }
-  return Math.max(SUBSCRIBE_INTERVAL_SECONDS, Math.ceil(minIntervalSeconds))
+export function resolveSubscribeIntervalSeconds(minIntervalSeconds?: number, requestedSeconds?: number): number {
+  return Math.max(
+    SUBSCRIBE_INTERVAL_SECONDS,
+    wholePositiveSeconds(requestedSeconds) ?? 0,
+    wholePositiveSeconds(minIntervalSeconds) ?? 0
+  )
 }
 
-/** What a subscription does when it should refetch. */
-export type SubscriptionRefetch = (options: { maxAgeSeconds: number }) => void
+function wholePositiveSeconds(seconds: number | undefined): number | undefined {
+  return seconds !== undefined && Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : undefined
+}
 
 /**
- * Call `refetch` whenever the subscribed query may have new data. Returns a
- * function that stops it.
+ * A query hook's `subscribe` option: `true` for Cube.js's default (keys checked
+ * at most every 10 seconds, floored by `features.refresh.minIntervalSeconds`),
+ * or `{ intervalSeconds }` to check less often (a portlet's refresh interval).
  */
-export function scheduleSubscription(intervalSeconds: number, refetch: SubscriptionRefetch): () => void {
-  const timer = setInterval(() => refetch({ maxAgeSeconds: intervalSeconds }), intervalSeconds * 1000)
-  return () => clearInterval(timer)
-}
+export type SubscribeOption = boolean | { intervalSeconds?: number }

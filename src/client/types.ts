@@ -658,7 +658,10 @@ export function isMultiQueryConfig(obj: unknown): obj is MultiQueryConfig {
 export interface CubeQueryOptions {
   skip?: boolean
   resetResultSetOnChange?: boolean
-  /** Keep the query current by refetching it every 10 seconds (Cube.js `subscribe`). */
+  /**
+   * Keep the query current (Cube.js `subscribe`): refetch when the query's
+   * refresh key changes, checked every 10 seconds at most.
+   */
   subscribe?: boolean
 }
 
@@ -668,9 +671,10 @@ export interface CubeApiOptions {
   headers?: Record<string, string>
   credentials?: 'include' | 'omit' | 'same-origin'
   /**
-   * Floor, in seconds, for how often `CubeClient.subscribe` refetches. It
-   * refetches every 10 seconds unless this is larger. (`useCubeQuery`'s
-   * `subscribe` is floored by `features.refresh.minIntervalSeconds` instead.)
+   * Floor, in seconds, for how often `CubeClient.subscribe` checks refresh keys
+   * (and, against a server without `/refresh-keys`, refetches). 10 seconds
+   * unless this is larger. (`useCubeQuery`'s `subscribe` is floored by
+   * `features.refresh.minIntervalSeconds` instead.)
    */
   minSubscribeIntervalSeconds?: number
 }
@@ -699,6 +703,8 @@ export interface CubeResultSet {
   lastRefreshTime?(): string | undefined
   /** Rows the query would return without limit/offset — only when `total: true` was asked for. */
   totalCount?(): number | undefined
+  /** Hash of the rows: unchanged across a cache miss and hit for the same rows. Undefined from an older server. */
+  fingerprint?(): string | undefined
 }
 
 // Component props
@@ -712,10 +718,17 @@ export interface AnalyticsPortletProps {
   eagerLoad?: boolean // Force immediate loading (default: false, lazy load enabled)
   /**
    * The portlet refreshes on an interval: while scrolled away its queries are
-   * disabled, so ticks only mark them stale and it fetches once back in view.
+   * disabled and stop checking for changes; back in view, the first check
+   * refetches only if the data changed meanwhile.
    * Without it a loaded portlet stays live when scrolled away.
    */
   hasIntervalRefresh?: boolean
+  /**
+   * Keep the portlet current by change detection: its queries' refresh keys
+   * are checked at most this often and it refetches when they change. Leave undefined while refresh is off,
+   * paused, or in edit mode. The dashboard sets it from the refresh config.
+   */
+  subscribeIntervalSeconds?: number
   isVisible?: boolean // Whether the portlet is visible in the viewport (for lazy loading)
   height?: string | number
   title?: string
@@ -759,6 +772,12 @@ export interface PortletFreshness {
   computedAt?: string
   /** Whether a fetch is in flight. */
   isFetching: boolean
+  /**
+   * When the server last confirmed the portlet's refresh keys, so its rows are
+   * current even when they were computed earlier (change detection on). A
+   * getter, so a check does not re-render the portlet: read it when rendering.
+   */
+  getCheckedAt?: () => string | undefined
 }
 
 /**

@@ -31,9 +31,9 @@ import RowManagedLayout from '../RowManagedLayout.js'
 import PortletGroupCard from '../PortletGroupCard.js'
 import type { PortletCardVariant } from '../dashboardPortletCard/cardStyles.js'
 import { findPortletLocation, removeFromGroup, type SnapEdge } from '../../hooks/dashboard/groupUtils.js'
+import { resolveEffectiveRefresh } from '../../utils/freshness.js'
 import { ensureAnalysisConfig } from '../../utils/configMigration.js'
 import { useCubeFeatures } from '../../providers/CubeProvider.js'
-import { useDashboardRefreshTimer } from '../../hooks/dashboard/useDashboardRefreshTimer.js'
 import { useResponsiveDashboard } from '../../hooks/useResponsiveDashboard.js'
 import { ScrollContainerProvider } from '../../providers/ScrollContainerContext.js'
 import { useDashboard } from '../../hooks/useDashboardHook.js'
@@ -718,26 +718,21 @@ export default function DashboardCoordinator({
   }, [handlePortletDragEnd])
 
   // Handle portlet refresh - use action from hook
-  // { bustCache: true } (shift+click) is max-age 0; interval ticks pass { maxAgeSeconds }
+  // { bustCache: true } (shift+click) is max-age 0
   const handlePortletRefresh = useCallback((portletId: string, options?: MaxAgeOptions) => {
     actionsRef.current.refreshPortlet(portletId, options)
   }, [])
 
-  // Interval refresh (features.refresh): one timer per interval group, each
-  // tick going through the refresh button's action. Edit mode and the
-  // dashboard-level pause stop the timers; a paused portlet skips its ticks.
+  // Live refresh (features.refresh): each portlet with a refresh interval
+  // subscribes its queries to change detection (usePortletLiveRefresh) and
+  // refetches when their keys change. This holds the dashboard-level state.
   const isRefreshPaused = useDashboardStore(state => state.isRefreshPaused)
-  const pausedPortletIds = useDashboardStore(state => state.pausedPortletIds)
   const toggleRefreshPaused = useDashboardStore(state => state.toggleRefreshPaused)
   const togglePortletRefreshPaused = useDashboardStore(state => state.togglePortletRefreshPaused)
-  const { hasRefresh } = useDashboardRefreshTimer({
-    portlets: config.portlets,
-    dashboardRefresh: config.refresh,
-    features,
-    stopped: isEditMode || isRefreshPaused,
-    pausedPortletIds,
-    refreshPortlet: handlePortletRefresh,
-  })
+  const hasRefresh = useMemo(
+    () => config.portlets.some(portlet => resolveEffectiveRefresh(portlet.refresh, config.refresh, features)),
+    [config.portlets, config.refresh, features]
+  )
   const refreshState = useMemo(() => ({
     hasRefresh,
     isPaused: isRefreshPaused,

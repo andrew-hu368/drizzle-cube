@@ -13,6 +13,15 @@ export interface MaxAgeOptions {
   maxAgeSeconds?: number
   /** Shorthand for `maxAgeSeconds: 0` (shift+click on refresh). */
   bustCache?: boolean
+  /**
+   * The refresh key whose change triggered this refetch. A refetch with a new
+   * key cancels a fetch already in flight, which may predate the change. The
+   * client sends each watched query's current key as `X-Refresh-Key` (or in the
+   * `/batch` body) by itself, scoping the server's result cache entry to the
+   * new data, so the first viewer in a security context misses and the rest
+   * share the result.
+   */
+  refreshKey?: string
 }
 
 /**
@@ -41,23 +50,33 @@ export function maxAgeHeaders(maxAgeSeconds: number | undefined): Record<string,
 }
 
 /**
- * Keep the stricter of two max-ages; `bustCache` resolves to max-age 0. Returns
- * `current` itself (same identity) unless `incoming` resolves to a stricter one.
+ * Keep the stricter of two max-ages (`bustCache` resolves to max-age 0) and
+ * the newest refresh key. Returns `current` itself (same identity) unless
+ * `incoming` brings a stricter max-age or a different refresh key.
  */
 export function retainStricterMaxAge(current?: MaxAgeOptions, incoming?: MaxAgeOptions): MaxAgeOptions | undefined {
   const requested = resolveMaxAgeSeconds(incoming)
-  if (requested === undefined) return current
   const held = resolveMaxAgeSeconds(current)
-  if (held !== undefined && held <= requested) return current
-  return { maxAgeSeconds: requested }
+  const stricter = requested !== undefined && (held === undefined || requested < held)
+  const incomingKey = incoming?.refreshKey
+  const newKey = incomingKey !== undefined && incomingKey !== current?.refreshKey
+  if (!stricter && !newKey) return current
+
+  const maxAgeSeconds = stricter ? requested : held
+  const refreshKey = newKey ? incomingKey : current?.refreshKey
+  return {
+    ...(maxAgeSeconds !== undefined && { maxAgeSeconds }),
+    ...(refreshKey !== undefined && { refreshKey })
+  }
 }
 
 /** A refetch's max-age, tracked per hook until a fetch with it succeeds. */
 export interface RefetchMaxAgeTracker {
   /**
-   * Retain the stricter resolved max-age; an absent or invalid max-age adds
-   * nothing. Does not fetch. Returns whether the pending max-age became
-   * stricter, which is when a fetch already in flight no longer satisfies it.
+   * Retain the stricter resolved max-age and the newest refresh key; an absent
+   * or invalid max-age adds nothing. Does not fetch. Returns whether the pending
+   * options changed (a stricter max-age or a new refresh key), which is when a
+   * fetch already in flight no longer satisfies them.
    */
   recordMaxAge: (options?: MaxAgeOptions) => boolean
   /** Whether a max-age is waiting for a successful fetch, including while one is in flight. */

@@ -14,6 +14,9 @@ import { useCubeFeatures } from '../../providers/CubeFeaturesProvider.js'
 import { useDebounceQuery } from '../useDebounceQuery.js'
 import { stableStringify } from '../../shared/queryKey.js'
 import type { CubeQuery } from '../../types.js'
+import { keepUnchangedResult } from '../../client/resultFingerprint.js'
+import { useQuerySubscription } from './useQuerySubscription.js'
+import type { SubscribeOption } from '../../client/subscription.js'
 import { createRefetchMaxAgeTracker, type MaxAgeOptions } from '../../client/maxAge.js'
 import { resultSetComputedAt } from '../../utils/freshness.js'
 import type {
@@ -39,6 +42,11 @@ export interface UseFlowQueryOptions {
   onComplete?: (data: FlowChartData) => void
   /** Callback when query fails */
   onError?: (error: Error) => void
+  /**
+   * Keep the query current: refetch when its refresh key changes (see
+   * `useCubeLoadQuery`'s `subscribe`). `{ intervalSeconds }` checks less often.
+   */
+  subscribe?: SubscribeOption
 }
 
 /**
@@ -53,6 +61,8 @@ export interface UseFlowQueryResult {
   cacheInfo?: { hit: true; cachedAt: string; ttlMs: number; ttlRemainingMs: number } | null
   /** When the rows were computed on the server (cache time on a hit, else response time) */
   computedAt?: string | null
+  /** When the server last confirmed the query's refresh key (ISO), while subscribed. A getter: a check does not re-render */
+  getCheckedAt?: () => string | undefined
   /** Is initial load in progress */
   isLoading: boolean
   /** Is refetch in progress */
@@ -152,6 +162,7 @@ export function useFlowQuery(
     debounceMs = DEFAULT_DEBOUNCE_MS,
     onComplete,
     onError,
+    subscribe,
   } = options
 
   const { cubeApi } = useCubeApi()
@@ -254,6 +265,7 @@ export function useFlowQuery(
         executionTime,
         cacheInfo,
         computedAt: resultSetComputedAt(resultSet),
+        fingerprint: resultSet.fingerprint?.(),
         // Include query key in result so we can detect stale data
         // (data from a different query key, e.g., sankey vs sunburst mode)
           // We store the RAW query key so we can compare against the current raw query
@@ -271,6 +283,8 @@ export function useFlowQuery(
     // stale, so the query fetches with it once enabled
     staleTime: () => (refetchMaxAge.hasPendingMaxAge() ? 0 : 60000),
     gcTime: 5 * 60 * 1000, // 5 minute garbage collection
+    // Same result fingerprint as the data shown: keep that data
+    structuralSharing: keepUnchangedResult,
   })
 
   // Track when query successfully executes in manual refresh mode
@@ -297,21 +311,21 @@ export function useFlowQuery(
 
   // Transform server result to chart data
   // Return null if data is stale (from a different query) to show loading instead
+  // Not keyed on fetch status, so a refetch that kept the data (same fingerprint) keeps the chart data
+  const resultRows = queryResult.data?.rawData
   const chartData = useMemo<FlowChartData | null>(() => {
     // If data is stale (from different query), return null to show loading
     if (isDataStale) return null
+    if (!resultRows) return null
+    return transformFlowResult(resultRows)
+  }, [resultRows, isDataStale])
 
-    if (!queryResult.data?.rawData) return null
-
-    const transformed = transformFlowResult(queryResult.data.rawData)
-
-    // Call completion callback
-    if (transformed && queryResult.isSuccess && !queryResult.isFetching) {
-      onComplete?.(transformed)
+  // Call completion callback once the fetch settles
+  useEffect(() => {
+    if (chartData && queryResult.isSuccess && !queryResult.isFetching) {
+      onComplete?.(chartData)
     }
-
-    return transformed
-  }, [queryResult.data, queryResult.isSuccess, queryResult.isFetching, onComplete, isDataStale])
+  }, [chartData, queryResult.isSuccess, queryResult.isFetching, onComplete])
 
   /**
    * Refetch the flow query.
@@ -332,6 +346,14 @@ export function useFlowQuery(
     if (enabled) void refetchQuery({ cancelRefetch })
   }, [refetchMaxAge, debouncedQuery, isValid, skip, enabled, currentQueryKey, refetchQuery])
 
+  // Subscription: refetch when the query's refresh key changes
+  const getCheckedAt = useQuerySubscription({
+    queries: debouncedQuery ? (debouncedQuery as unknown as CubeQuery) : null,
+    subscribe,
+    active: !manualRefresh && shouldExecute && enabled,
+    refetch
+  })
+
   /**
    * Reset clears the query cache
    */
@@ -344,6 +366,7 @@ export function useFlowQuery(
     rawData: isDataStale ? null : (queryResult.data?.rawData ?? null),
     cacheInfo: queryResult.data?.cacheInfo ?? null,
     computedAt: isDataStale ? null : (queryResult.data?.computedAt ?? null),
+    getCheckedAt,
     isLoading: queryResult.isLoading || isDataStale,
     isFetching: queryResult.isFetching,
     isDebouncing,

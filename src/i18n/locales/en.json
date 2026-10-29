@@ -1577,6 +1577,8 @@
   "dashboard.portlet.freshness.minutes": "{count}m",
   "dashboard.portlet.freshness.hours": "{count}h",
   "dashboard.portlet.freshness.computedAt": "Data computed at {time}",
+  "dashboard.portlet.freshness.checkedAt": "Checked for changes at {time}",
+  "dashboard.portlet.freshness.uncheckedTitle": "Not confirmed current for two refresh intervals ({interval}s each)",
   "dashboard.portlet.freshness.updating": "Updating",
   "dashboard.portlet.freshness.staleTitle": "Data is older than two refresh intervals ({interval}s each)",
   "dashboard.portlet.freshness.pausedTitle": "Auto-refresh is paused",

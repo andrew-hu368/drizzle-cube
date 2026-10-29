@@ -113,6 +113,14 @@ export const handlers = [
     return HttpResponse.json({ results })
   }),
 
+  // POST /refresh-keys - Composite refresh keys (subscriptions); keys never change by default
+  http.post('*/cubejs-api/v1/refresh-keys', async ({ request }) => {
+    const body = await request.json() as { queries?: unknown[] }
+    return HttpResponse.json({
+      keys: (body.queries || []).map(() => ({ key: 'unchanged', checkAfterSeconds: 10 }))
+    })
+  }),
+
   // POST /sql - Dry run (SQL preview)
   http.post('*/cubejs-api/v1/sql', async ({ request }) => {
     const body = await request.json() as { query?: Record<string, unknown> }

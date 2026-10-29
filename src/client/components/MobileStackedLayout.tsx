@@ -4,14 +4,23 @@
  * Read-only view with portlets sorted by grid position
  */
 
-import { useMemo, useRef, useState, useCallback } from 'react'
+import { forwardRef, useMemo, useRef, useState, useCallback } from 'react'
 import { getIcon } from '../icons/index.js'
 import AnalyticsPortlet from './AnalyticsPortlet.js'
 
 const RefreshIcon = getIcon('refresh')
 import { ScrollContainerProvider } from '../providers/ScrollContainerContext.js'
 import { useTranslation } from '../hooks/useTranslation.js'
-import type { AnalyticsPortletRef, DashboardFilter, DashboardConfig, PortletConfig, PortletGroup } from '../types.js'
+import type {
+  AnalyticsPortletProps,
+  AnalyticsPortletRef,
+  DashboardFilter,
+  DashboardConfig,
+  DashboardRefreshConfig,
+  PortletConfig,
+  PortletGroup
+} from '../types.js'
+import { usePortletLiveRefresh } from '../hooks/dashboard/usePortletLiveRefresh.js'
 import type { ColorPalette } from '../utils/colorPalettes.js'
 import { resolveMobilePortletDisplay } from './mobileStackedLayout/memberDisplay.js'
 import { headerHasBottomRule, isAutoHeightMarkdownPortlet } from './rowManagedLayout/sections.js'
@@ -35,11 +44,27 @@ interface MobileStackedLayoutProps {
   onPortletRefresh?: (portletId: string) => void
   /**
    * Registers each chart with the dashboard, so its refresh action (the
-   * refresh button and interval ticks) reaches mobile charts. When set, the
+   * refresh button) reaches mobile charts. When set, the
    * refresh button leaves refreshing to `onPortletRefresh`.
    */
   setPortletComponentRef?: (portletId: string, element: AnalyticsPortletRef | null) => void
 }
+
+/** A chart kept current by change detection while live, decided as on the grid card. */
+const LiveAnalyticsPortlet = forwardRef<
+  AnalyticsPortletRef,
+  AnalyticsPortletProps & { portlet: PortletConfig; dashboardRefresh?: DashboardRefreshConfig }
+>(function LiveAnalyticsPortlet({ portlet, dashboardRefresh, ...props }, ref) {
+  const { effectiveRefresh, subscribeIntervalSeconds } = usePortletLiveRefresh(portlet, dashboardRefresh)
+  return (
+    <AnalyticsPortlet
+      ref={ref}
+      {...props}
+      hasIntervalRefresh={!!effectiveRefresh}
+      subscribeIntervalSeconds={subscribeIntervalSeconds}
+    />
+  )
+})
 
 /**
  * Mobile-optimized stacked layout for dashboard portlets
@@ -204,7 +229,9 @@ export default function MobileStackedLayout({
           className={`dc-portlet-card-body dc:overflow-visible dc:flex dc:flex-col${isTransparent && !inSection ? '' : ' dc:px-2 dc:py-3'}`}
           style={{ height: isAutoHeight ? 'auto' : contentHeight }}
         >
-          <AnalyticsPortlet
+          <LiveAnalyticsPortlet
+            portlet={portlet}
+            dashboardRefresh={config.refresh}
             ref={el => {
               portletComponentRefs.current[portlet.id] = el
               setPortletComponentRef?.(portlet.id, el)

@@ -19,6 +19,9 @@ import { stableStringify } from '../../shared/queryKey.js'
 import { useDebounceQuery } from '../useDebounceQuery.js'
 import { withChartGapFilling, type ChartGapFillOptions } from '../../utils/gapFilling.js'
 import { createRefetchMaxAgeTracker, type MaxAgeOptions } from '../../client/maxAge.js'
+import { keepUnchangedResult } from '../../client/resultFingerprint.js'
+import { useQuerySubscription } from './useQuerySubscription.js'
+import type { SubscribeOption } from '../../client/subscription.js'
 
 type MultiQueryServerConfig = MultiQueryConfig & { queries: CubeQuery[] }
 
@@ -96,6 +99,12 @@ export interface UseMultiCubeLoadQueryOptions {
    * merging. Omit for raw rows.
    */
   gapFill?: ChartGapFillOptions
+  /**
+   * Keep the queries current: refetch when any of their refresh keys changes
+   * (see `useCubeLoadQuery`'s `subscribe`). `{ intervalSeconds }` checks less
+   * often.
+   */
+  subscribe?: SubscribeOption
 }
 
 export interface UseMultiCubeLoadQueryResult {
@@ -126,6 +135,8 @@ export interface UseMultiCubeLoadQueryResult {
    * results at most that old, or `{ bustCache: true }` to bypass caches.
    */
   refetch: (options?: MaxAgeOptions) => void
+  /** When the server last confirmed the queries' refresh keys (ISO), while subscribed. A getter: a check does not re-render */
+  getCheckedAt?: () => string | undefined
 }
 
 /**
@@ -167,6 +178,7 @@ export function useMultiCubeLoadQuery(
     staleTime = 60 * 1000,
     keepPreviousData = true,
     gapFill,
+    subscribe,
   } = options
   // Primitives, so an inline `gapFill` object doesn't re-merge on every render
   const gapFillEnabled = !!gapFill
@@ -264,6 +276,8 @@ export function useMultiCubeLoadQuery(
     // fetches with it once enabled
     staleTime: () => (refetchMaxAge.hasPendingMaxAge() ? 0 : staleTime),
     placeholderData: keepPreviousData ? (prevData) => prevData : undefined,
+    // Same result fingerprints as the data shown: keep that data
+    structuralSharing: keepUnchangedResult,
   })
 
   // Refetch with the requested max-age. While the hook is skipped (an
@@ -275,6 +289,14 @@ export function useMultiCubeLoadQuery(
     // A disabled query (scrolled away) fetches with the max-age once enabled
     if (serverConfig && !skip && enabled) void refetchQuery({ cancelRefetch })
   }, [refetchMaxAge, serverConfig, skip, enabled, refetchQuery])
+
+  // Subscription: refetch when any of the queries' refresh keys changes
+  const getCheckedAt = useQuerySubscription({
+    queries: serverConfig?.queries ?? null,
+    subscribe,
+    active: !skip && enabled && !!serverConfig,
+    refetch
+  })
 
   // Gap-fill for a chart when asked. Uses the config the result was fetched
   // with, so placeholder data from a previous config merges consistently.
@@ -307,5 +329,6 @@ export function useMultiCubeLoadQuery(
     debouncedConfig,
     isValidConfig,
     refetch,
+    getCheckedAt,
   }
 }

@@ -59,7 +59,10 @@ export function resultSetComputedAt(resultSet: CubeResultSet | null | undefined)
   return resultSet.cacheInfo?.()?.cachedAt ?? resultSet.lastRefreshTime?.()
 }
 
-/** Stale: the rows are older than two refresh intervals. */
+/**
+ * Stale: the rows are older than two refresh intervals. Pass the checked-at
+ * time when change detection confirmed the rows since they were computed.
+ */
 export function isComputedAtStale(computedAt: string | undefined, intervalSeconds: number | undefined, nowMs: number): boolean {
   if (!computedAt || intervalSeconds === undefined) return false
   const computedMs = Date.parse(computedAt)

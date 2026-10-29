@@ -23,7 +23,10 @@ import { stableStringify } from '../../shared/queryKey.js'
 import { useDebounceQuery } from '../useDebounceQuery.js'
 import { withChartGapFilling, type ChartGapFillOptions } from '../../utils/gapFilling.js'
 import { createRefetchMaxAgeTracker, type MaxAgeOptions } from '../../client/maxAge.js'
-import { resolveSubscribeIntervalSeconds, scheduleSubscription } from '../../client/subscription.js'
+import { keepUnchangedResult } from '../../client/resultFingerprint.js'
+import { resultSetComputedAt } from '../../utils/freshness.js'
+import { useQuerySubscription } from './useQuerySubscription.js'
+import type { SubscribeOption } from '../../client/subscription.js'
 
 // Default debounce delay in milliseconds
 const DEFAULT_DEBOUNCE_MS = 300
@@ -78,14 +81,17 @@ export interface UseCubeLoadQueryOptions {
    */
   gapFill?: ChartGapFillOptions
   /**
-   * Keep the query current (Cube.js `subscribe`): every 10 seconds, raised to
-   * `features.refresh.minIntervalSeconds` when that is larger, refetch with
-   * max-age equal to the interval. Works
-   * with `features.refresh` off. Stops while the query is skipped or
+   * Keep the query current (Cube.js `subscribe`). The query's refresh key is
+   * checked every 10 seconds at most (raised to
+   * `features.refresh.minIntervalSeconds`, or to `{ intervalSeconds }`), and
+   * the query refetches only when its key changed. A refetch that returns the same
+   * rows keeps the previous `resultSet`. Against a server without
+   * `/refresh-keys` it refetches on the interval with max-age equal to it.
+   * Works with `features.refresh` off. Stops while the query is skipped or
    * disabled, and in `manualRefresh` mode.
    * @default false
    */
-  subscribe?: boolean
+  subscribe?: SubscribeOption
 }
 
 /**
@@ -132,6 +138,13 @@ export interface UseCubeLoadQueryResult {
   executeQuery: (options?: RefetchOptions) => void
   /** Warnings from query planning (e.g., fan-out without dimensions) */
   warnings: QueryWarning[] | undefined
+  /**
+   * When the rows were computed on the server (ISO). A refetch that returned
+   * the same rows (same fingerprint) keeps the previous result, and this with it.
+   */
+  computedAt?: string
+  /** When the server last confirmed the query's refresh key (ISO), while subscribed. A getter: a check does not re-render */
+  getCheckedAt?: () => string | undefined
 }
 
 /**
@@ -252,6 +265,8 @@ export function useCubeLoadQuery(
     // so the query fetches with it once enabled
     staleTime: () => (refetchMaxAge.hasPendingMaxAge() ? 0 : staleTime),
     placeholderData: keepPreviousData ? (prevData) => prevData : undefined,
+    // Same result fingerprint as the data shown: keep that data
+    structuralSharing: keepUnchangedResult,
   })
 
   // In auto mode, track executed query for consistency
@@ -326,14 +341,14 @@ export function useCubeLoadQuery(
   // Refetch is an alias for executeQuery for backward compatibility
   const refetch = executeQuery
 
-  // Subscription: refetch on the subscribe interval while the query runs.
-  // executeQuery changes with the query, so a new query restarts the timer.
-  const subscribeIntervalSeconds = resolveSubscribeIntervalSeconds(features.refresh?.minIntervalSeconds)
-  const subscriptionActive = subscribe && !manualRefresh && shouldExecute && enabled
-  useEffect(() => {
-    if (!subscriptionActive) return
-    return scheduleSubscription(subscribeIntervalSeconds, executeQuery)
-  }, [subscriptionActive, subscribeIntervalSeconds, executeQuery])
+  // Subscription: watch the query's refresh key while the query runs, and
+  // refetch when it changes. A new query watches the new key.
+  const getCheckedAt = useQuerySubscription({
+    queries: serverQuery,
+    subscribe,
+    active: !manualRefresh && shouldExecute && enabled,
+    refetch: executeQuery
+  })
 
   // Clear cache function
   const clearCache = () => {
@@ -364,5 +379,7 @@ export function useCubeLoadQuery(
     needsRefresh,
     executeQuery,
     warnings,
+    computedAt: resultSetComputedAt(queryResult.data),
+    getCheckedAt,
   }
 }

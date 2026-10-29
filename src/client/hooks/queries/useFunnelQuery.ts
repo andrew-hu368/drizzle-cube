@@ -19,6 +19,8 @@ import { useCubeFeatures } from '../../providers/CubeFeaturesProvider.js'
 import { useDebounceQuery } from '../useDebounceQuery.js'
 import { stableStringify } from '../../shared/queryKey.js'
 import type { CubeQuery } from '../../types.js'
+import { keepUnchangedResult } from '../../client/resultFingerprint.js'
+import { useQuerySubscription } from './useQuerySubscription.js'
 import { createRefetchMaxAgeTracker, type MaxAgeOptions } from '../../client/maxAge.js'
 import { resultSetComputedAt } from '../../utils/freshness.js'
 import type {
@@ -156,6 +158,7 @@ export function useFunnelQuery(
     onComplete,
     onError,
     prebuiltServerQuery,
+    subscribe,
   } = options
 
   const { cubeApi } = useCubeApi()
@@ -271,6 +274,7 @@ export function useFunnelQuery(
           executionTime,
           cacheInfo,
           computedAt: resultSetComputedAt(resultSet),
+          fingerprint: resultSet.fingerprint?.(),
         }
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error))
@@ -285,6 +289,8 @@ export function useFunnelQuery(
     // stale, so the query fetches with it once enabled
     staleTime: () => (refetchMaxAge.hasPendingMaxAge() ? 0 : 60000),
     gcTime: 5 * 60 * 1000, // 5 minute garbage collection
+    // Same result fingerprint as the data shown: keep that data
+    structuralSharing: keepUnchangedResult,
   })
 
   // Track when query successfully executes in manual refresh mode
@@ -416,6 +422,14 @@ export function useFunnelQuery(
     }
   }, [refetchMaxAge, serverQuery, skip, enabled, result, currentQueryKey, refetchQuery])
 
+  // Subscription: refetch when the funnel's refresh key changes
+  const getCheckedAt = useQuerySubscription({
+    queries: serverQuery ? (serverQuery as unknown as CubeQuery) : null,
+    subscribe,
+    active: !manualRefresh && shouldExecute && enabled,
+    refetch: execute
+  })
+
   /**
    * Cancel is a no-op for TanStack Query (handled automatically)
    */
@@ -450,6 +464,7 @@ export function useFunnelQuery(
     serverQuery,
     cacheInfo: queryResult.data?.cacheInfo ?? null,
     computedAt: queryResult.data?.computedAt ?? null,
+    getCheckedAt,
     // Manual refresh mode support
     needsRefresh,
   }

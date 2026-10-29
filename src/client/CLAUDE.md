@@ -48,9 +48,12 @@ src/client/
 │
 ├── client/                        API client
 │   ├── CubeClient.ts             HTTP client for Cube-compatible API
-│   ├── BatchCoordinator.ts       Request batching (one queue per max-age)
-│   ├── subscription.ts           When a subscribed query refetches (Phase 0: interval with max-age)
-│   └── maxAge.ts                 Max-age options → headers; per-hook refetch max-age tracker
+│   ├── batcher.ts                createBatcher: queue, flush after a delay, settle each item from one call; dedup by key, one call per group
+│   ├── BatchCoordinator.ts       /batch loads on createBatcher (one group per max-age; per-result errors)
+│   ├── RefreshKeyCoordinator.ts  Change detection: per-watcher clock-aligned /refresh-keys checks, batched on createBatcher (dedup by query); last key per query
+│   ├── subscription.ts           Subscription interval and `subscribe` option
+│   ├── resultFingerprint.ts      structuralSharing: keep the previous data when the result fingerprint is unchanged
+│   └── maxAge.ts                 Max-age / refresh-key options → headers; per-hook refetch tracker
 │
 ├── components/                    React components
 │   ├── AnalysisBuilder/           Query builder (~50 files, see AnalysisBuilder CLAUDE.md)
@@ -147,7 +150,7 @@ src/client/
 │   │   ├── useDashboardController.ts, useGridLayoutEngine.ts
 │   │   ├── useRowLayoutEngine.ts, layoutUtils.ts
 │   │   ├── useDashboardImportExport.ts  Export/import flow (features.dashboardImportExport)
-│   │   ├── useDashboardRefreshTimer.ts  Interval refresh: one timer per interval group (features.refresh)
+│   │   ├── usePortletLiveRefresh.ts  Whether a portlet subscribes to change detection, at what interval (card + mobile; features.refresh)
 │   ├── useAnalysisBuilderHook.ts  AnalysisBuilder public facade (useAnalysisBuilder)
 │   ├── useAnalysisState.ts        State: store reads/derivation, query specs, chart config, UI state
 │   ├── useAnalysisQuery.ts        Query: execution only (5 TanStack hooks, mode routing, hasDebounced)

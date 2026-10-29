@@ -1,11 +1,14 @@
 /**
- * Dashboard interval refresh (issue #271, Phase 0b), rendered through
- * DashboardGrid with fake timers.
+ * Dashboard live refresh (issue #271), rendered through DashboardGrid with
+ * fake timers.
  *
- * AnalyticsPortlet is replaced by a stub whose imperative `refresh` records
- * calls, so these tests observe exactly what the dashboard timer and the
- * refresh button ask a portlet to do. The stub also reports freshness the way
- * the real portlet does, to drive the header indicator.
+ * AnalyticsPortlet is replaced by a stub that records the change-detection
+ * interval the dashboard gives it (`subscribeIntervalSeconds`, undefined while
+ * it should not subscribe) and whose imperative `refresh` records calls, so
+ * these tests observe exactly what the dashboard and the refresh button ask a
+ * portlet to do. The stub also reports freshness the way the real portlet
+ * does, to drive the header indicator. The subscription itself (key checks,
+ * refetch on change) is covered by the coordinator, client and hook tests.
  */
 
 import React, { useEffect, useImperativeHandle } from 'react'
@@ -70,11 +73,13 @@ vi.mock('../../../../src/client/providers/ScrollContainerContext', () => ({
 // Portlet stub: records refresh calls and reports freshness from `freshnessByTitle`
 const refreshCalls: Array<{ portlet: string; options: unknown }> = []
 const intervalRefreshByTitle: Record<string, boolean | undefined> = {}
+const subscribeByTitle: Record<string, number | undefined> = {}
 const freshnessByTitle: Record<string, PortletFreshness> = {}
 
 vi.mock('../../../../src/client/components/AnalyticsPortlet', () => ({
   default: React.forwardRef<unknown, AnalyticsPortletProps>(function PortletStub(props, ref) {
     intervalRefreshByTitle[props.title ?? ''] = props.hasIntervalRefresh
+    subscribeByTitle[props.title ?? ''] = props.subscribeIntervalSeconds
     useImperativeHandle(ref, () => ({
       refresh: (options?: unknown) => refreshCalls.push({ portlet: props.title ?? '', options }),
       getViewState: () => ({})
@@ -137,6 +142,7 @@ describe('Dashboard interval refresh', () => {
     vi.useFakeTimers()
     refreshCalls.length = 0
     for (const key of Object.keys(freshnessByTitle)) delete freshnessByTitle[key]
+    for (const key of Object.keys(subscribeByTitle)) delete subscribeByTitle[key]
     mockFeatures = { refresh: { enabled: true } }
   })
 
@@ -144,7 +150,7 @@ describe('Dashboard interval refresh', () => {
     vi.useRealTimers()
   })
 
-  it('runs one timer per interval group, each tick refreshing with max-age = interval', async () => {
+  it('subscribes each portlet at its effective interval', async () => {
     const config: DashboardConfig = {
       layoutMode: 'grid',
       refresh: { intervalSeconds: 30 },
@@ -152,31 +158,21 @@ describe('Dashboard interval refresh', () => {
     }
     render(<DashboardGrid config={config} />, { wrapper: TestWrapper })
 
-    await advanceSeconds(10)
-    expect(callsFor('c')).toEqual([{ portlet: 'c', options: { maxAgeSeconds: 10 } }])
-    expect(callsFor('a')).toHaveLength(0)
-
-    await advanceSeconds(20)
-    expect(callsFor('c')).toHaveLength(3)
-    expect(callsFor('a')).toEqual([{ portlet: 'a', options: { maxAgeSeconds: 30 } }])
-    expect(callsFor('b')).toEqual([{ portlet: 'b', options: { maxAgeSeconds: 30 } }])
+    expect(subscribeByTitle).toMatchObject({ a: 30, b: 30, c: 10 })
   })
 
-  it('stops ticking in edit mode', async () => {
+  it('unsubscribes in edit mode', async () => {
     const config: DashboardConfig = { layoutMode: 'grid', refresh: { intervalSeconds: 10 }, portlets: [portlet('a')] }
     render(<DashboardGrid config={config} editable={true} />, { wrapper: TestWrapper })
-
-    await advanceSeconds(10)
-    expect(callsFor('a')).toHaveLength(1)
+    expect(subscribeByTitle.a).toBe(10)
 
     await act(async () => {
       fireEvent.click(screen.getByText('Edit'))
     })
-    await advanceSeconds(60)
-    expect(callsFor('a')).toHaveLength(1)
+    expect(subscribeByTitle.a).toBeUndefined()
   })
 
-  it('stops ticking while the dashboard is paused from the toolbar, and resumes', async () => {
+  it('unsubscribes while the dashboard is paused from the toolbar, and resubscribes', async () => {
     const config: DashboardConfig = { layoutMode: 'grid', refresh: { intervalSeconds: 10 }, portlets: [portlet('a')] }
     // Read-only dashboards still get the toolbar for the pause toggle
     render(<DashboardGrid config={config} editable={false} />, { wrapper: TestWrapper })
@@ -191,17 +187,15 @@ describe('Dashboard interval refresh', () => {
     // The card shows the dashboard pause as a disabled play button
     expect(screen.getByTestId('portlet-refresh-pause')).toBeDisabled()
     expect(screen.getByTestId('portlet-refresh-pause')).toHaveAttribute('aria-pressed', 'true')
-    await advanceSeconds(60)
-    expect(refreshCalls).toHaveLength(0)
+    expect(subscribeByTitle.a).toBeUndefined()
 
     await act(async () => {
       fireEvent.click(toggle)
     })
-    await advanceSeconds(10)
-    expect(callsFor('a')).toHaveLength(1)
+    expect(subscribeByTitle.a).toBe(10)
   })
 
-  it('skips ticks for a portlet paused from its header, and shows it paused', async () => {
+  it('unsubscribes a portlet paused from its header, and shows it paused', async () => {
     const config: DashboardConfig = {
       layoutMode: 'grid',
       refresh: { intervalSeconds: 10 },
@@ -215,19 +209,15 @@ describe('Dashboard interval refresh', () => {
     })
     expect(pauseA).toHaveAttribute('aria-pressed', 'true')
     expect(pauseA).toHaveAttribute('title', 'Resume auto-refresh for this portlet')
-
-    await advanceSeconds(20)
-    expect(callsFor('a')).toHaveLength(0)
-    expect(callsFor('b')).toHaveLength(2)
+    expect(subscribeByTitle).toMatchObject({ a: undefined, b: 10 })
 
     await act(async () => {
       fireEvent.click(pauseA)
     })
-    await advanceSeconds(10)
-    expect(callsFor('a')).toHaveLength(1)
+    expect(subscribeByTitle.a).toBe(10)
   })
 
-  it('skips ticks while the tab is hidden when pauseWhenHidden is set', async () => {
+  it('unsubscribes while the tab is hidden when pauseWhenHidden is set', async () => {
     const config: DashboardConfig = {
       layoutMode: 'grid',
       portlets: [portlet('a', { intervalSeconds: 10, pauseWhenHidden: true }), portlet('b', { intervalSeconds: 10 })]
@@ -236,24 +226,29 @@ describe('Dashboard interval refresh', () => {
 
     const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
     try {
-      await advanceSeconds(10)
-      expect(callsFor('a')).toHaveLength(0)
-      expect(callsFor('b')).toHaveLength(1)
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      expect(subscribeByTitle).toMatchObject({ a: undefined, b: 10 })
     } finally {
       visibility.mockRestore()
     }
 
-    await advanceSeconds(10)
-    expect(callsFor('a')).toHaveLength(1)
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    expect(subscribeByTitle.a).toBe(10)
   })
 
-  it('tells each chart whether it refreshes on an interval', async () => {
+  it('tells each chart whether it refreshes on an interval, and subscribes only those', async () => {
     const config: DashboardConfig = {
       layoutMode: 'grid',
       portlets: [portlet('a', { intervalSeconds: 30 }), portlet('b')]
     }
     render(<DashboardGrid config={config} />, { wrapper: TestWrapper })
     expect(intervalRefreshByTitle).toMatchObject({ a: true, b: false })
+    expect(subscribeByTitle.a).toBe(30)
+    expect(subscribeByTitle.b).toBeUndefined()
   })
 
   it('keeps the refresh button on the same path (shift+click is a bust)', async () => {
@@ -349,6 +344,24 @@ describe('Dashboard interval refresh', () => {
       expect(screen.getByTestId('portlet-freshness')).toHaveAttribute('data-state', 'stale')
     })
 
+    it('shows checked-at, and stays fresh while change detection keeps confirming old rows', async () => {
+      vi.setSystemTime(new Date('2026-10-23T10:05:00Z'))
+      // Rows computed five minutes ago, confirmed unchanged ten seconds ago
+      freshnessByTitle.a = { computedAt: '2026-10-23T10:00:00Z', getCheckedAt: () => '2026-10-23T10:04:50Z', isFetching: false }
+      const config: DashboardConfig = { layoutMode: 'grid', portlets: [portlet('a', { intervalSeconds: 30 })] }
+      render(<DashboardGrid config={config} />, { wrapper: TestWrapper })
+
+      const indicator = screen.getByTestId('portlet-freshness')
+      expect(indicator).toHaveAttribute('data-state', 'fresh')
+      expect(indicator.getAttribute('title')).toContain('Checked for changes at')
+      expect(screen.getByTestId('portlet-freshness-age')).toHaveAttribute('data-checked-at', '2026-10-23T10:04:50Z')
+
+      // No check for 65 s: stale, with the unchecked title
+      await advanceSeconds(55)
+      expect(indicator).toHaveAttribute('data-state', 'stale')
+      expect(indicator.getAttribute('title')).toContain('Not confirmed current for two refresh intervals')
+    })
+
     it('shows paused instead of stale while the dashboard is paused', async () => {
       vi.setSystemTime(new Date('2026-10-23T10:05:00Z'))
       freshnessByTitle.a = { computedAt: '2026-10-23T10:00:00Z', isFetching: false }
@@ -362,7 +375,7 @@ describe('Dashboard interval refresh', () => {
       expect(screen.getByTestId('portlet-freshness')).toHaveAttribute('data-state', 'paused')
     })
 
-    it('shows no indicator and does not tick when the feature is off', async () => {
+    it('shows no indicator and does not subscribe when the feature is off', async () => {
       mockFeatures = {}
       freshnessByTitle.a = { computedAt: '2026-10-23T10:00:00Z', isFetching: false }
       const config: DashboardConfig = { layoutMode: 'grid', refresh: { intervalSeconds: 30 }, portlets: [portlet('a')] }
@@ -370,8 +383,7 @@ describe('Dashboard interval refresh', () => {
 
       expect(screen.queryByTestId('portlet-freshness')).toBeNull()
       expect(screen.queryByTestId('portlet-refresh-pause')).toBeNull()
-      await advanceSeconds(60)
-      expect(refreshCalls).toHaveLength(0)
+      expect(subscribeByTitle.a).toBeUndefined()
     })
   })
 })
