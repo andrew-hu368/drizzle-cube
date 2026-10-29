@@ -32,6 +32,7 @@ import {
   createSqlHandler,
   createDryRunHandler,
   createBatchHandler,
+  createRefreshKeysHandler,
   createCubeHandlers,
   createMcpRpcHandler,
   createOptionsHandler,
@@ -259,7 +260,7 @@ describe('Next.js Adapter', () => {
       
       expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*')
       expect(response.headers.get('Access-Control-Allow-Methods')).toBe('GET, POST, OPTIONS')
-      expect(response.headers.get('Access-Control-Allow-Headers')).toBe('Content-Type, Authorization, X-DC-Locale, X-Cache-Max-Age, X-Cache-Control')
+      expect(response.headers.get('Access-Control-Allow-Headers')).toBe('Content-Type, Authorization, X-DC-Locale, X-Cache-Max-Age, X-Cache-Control, X-Refresh-Key')
       expect(response.headers.get('Access-Control-Allow-Credentials')).toBe('true')
     })
   })
@@ -472,7 +473,7 @@ describe('Next.js Adapter', () => {
       expect(response.status).toBe(200)
       expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*')
       expect(response.headers.get('Access-Control-Allow-Methods')).toBe('GET, POST, OPTIONS')
-      expect(response.headers.get('Access-Control-Allow-Headers')).toBe('Content-Type, Authorization, X-DC-Locale, X-Cache-Max-Age, X-Cache-Control')
+      expect(response.headers.get('Access-Control-Allow-Headers')).toBe('Content-Type, Authorization, X-DC-Locale, X-Cache-Max-Age, X-Cache-Control, X-Refresh-Key')
       expect(response.headers.get('Access-Control-Allow-Credentials')).toBe('true')
     })
 
@@ -703,6 +704,24 @@ describe('Next.js Adapter', () => {
       const handler = createMcpRpcHandler(adapterOptions)
       const request = createMockNextRequest('DELETE')
       expect((await handler(request)).status).toBe(405)
+    })
+  })
+
+  describe('Refresh Keys Handler', () => {
+    it('returns hashed keys with no-store on POST', async () => {
+      const handler = createRefreshKeysHandler(adapterOptions)
+      const response = await handler(createMockNextRequest('POST', { queries: [{ measures: ['Employees.count'] }] }))
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get('cache-control')).toBe('private, no-store')
+      expect(await response.json()).toEqual({
+        keys: [{ key: expect.stringMatching(/^[0-9a-f]{32}$/), checkAfterSeconds: 10 }]
+      })
+    })
+
+    it('rejects GET with 405', async () => {
+      const handler = createRefreshKeysHandler(adapterOptions)
+      expect((await handler(createMockNextRequest('GET'))).status).toBe(405)
     })
   })
 

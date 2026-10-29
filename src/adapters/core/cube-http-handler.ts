@@ -152,6 +152,7 @@ export function createCubeHttpHandler(options: CubeHttpHandlerOptions): CubeHttp
     handleDryRunPost: (port, ctx) => restHandlers.handleDryRunPost(withRestCacheHeaders(port), ctx),
     handleBatchPost: (port, ctx) => restHandlers.handleBatchPost(withRestCacheHeaders(port), ctx),
     handleExplainPost: (port, ctx) => restHandlers.handleExplainPost(withRestCacheHeaders(port), ctx),
+    handleRefreshKeysPost: (port, ctx) => restHandlers.handleRefreshKeysPost(withRestCacheHeaders(port), ctx),
     handleMcpPost
   }
 }

@@ -37,7 +37,8 @@ src/server/
 ├── query-validator.ts       validateQueryAgainstCubes (standalone; breaks compiler↔executor cycle)
 ├── execution/               Execution-phase helpers extracted from QueryExecutor
 │   ├── mode-router.ts          ModeRouter — resolve + validate query mode
-│   ├── query-result-cache.ts   QueryResultCache — key/lookup (max-age)/store
+│   ├── query-result-cache.ts   QueryResultCache — key/lookup (max-age)/store; refresh-key scoping
+│   ├── result-fingerprint.ts   fingerprintResult — hash of result rows, stored with cache entries
 │   ├── filter-cache-preloader.ts FilterCachePreloader — pre-build filter SQL
 │   ├── annotation-builder.ts   buildAnnotations — UI metadata
 │   ├── result-post-processor.ts postProcessResultRows — time-dim normalise + gap fill

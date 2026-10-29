@@ -255,6 +255,10 @@ export function createCubeRouter(
     await httpHandler.handleBatchPost(createExpressPort(req, res), baseContext(req, res))
   })
 
+  router.post(`${basePath}/refresh-keys`, async (req: Request, res: Response) => {
+    await httpHandler.handleRefreshKeysPost(createExpressPort(req, res), baseContext(req, res))
+  })
+
   router.get(`${basePath}/meta`, async (req: Request, res: Response) => {
     await httpHandler.handleMetaGet(createExpressPort(req, res), baseContext(req, res))
   })

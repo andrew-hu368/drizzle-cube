@@ -81,6 +81,18 @@ describe('Hono Adapter', () => {
     expect(data.pivotQuery).toBeDefined()
   })
 
+  it('should handle POST /cubejs-api/v1/refresh-keys', async () => {
+    const res = await app.request(new Request('http://localhost/cubejs-api/v1/refresh-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ queries: [{ measures: ['Employees.count'] }] })
+    }))
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('private, no-store')
+    expect(await res.json()).toEqual({ keys: [{ key: expect.stringMatching(/^[0-9a-f]{32}$/), checkAfterSeconds: 10 }] })
+  })
+
   it('should handle GET /cubejs-api/v1/meta', async () => {
     const req = new Request('http://localhost/cubejs-api/v1/meta')
     const res = await app.request(req)

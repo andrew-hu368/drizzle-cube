@@ -280,6 +280,19 @@ export const cubePlugin: FastifyPluginCallback<FastifyAdapterOptions> = function
     httpHandler.handleBatchPost(createFastifyPort(request, reply), baseContext(request))
   )
 
+  fastify.post(`${basePath}/refresh-keys`, {
+    bodyLimit,
+    schema: {
+      body: {
+        type: 'object',
+        required: ['queries'],
+        properties: { queries: { type: 'array', items: { type: 'object' } } }
+      }
+    }
+  }, (request, reply) =>
+    httpHandler.handleRefreshKeysPost(createFastifyPort(request, reply), baseContext(request))
+  )
+
   fastify.get(`${basePath}/meta`, (request, reply) =>
     httpHandler.handleMetaGet(createFastifyPort(request, reply), baseContext(request))
   )

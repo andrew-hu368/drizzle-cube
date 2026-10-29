@@ -1,6 +1,7 @@
 /**
  * Framework-agnostic REST handlers for the non-`/load` Cube.js endpoints:
- * `meta`, `sql` (GET+POST), `dry-run` (GET+POST), `batch`, and `explain`.
+ * `meta`, `sql` (GET+POST), `dry-run` (GET+POST), `batch`, `explain`, and
+ * drizzle-cube's `refresh-keys`.
  *
  * Each handler runs the validate/execute/format flow against an {@link HttpPort}
  * with no framework types inside. Response shapes, status codes, and error
@@ -19,7 +20,7 @@ import {
   formatErrorResponse
 } from '../utils.js'
 import type { HttpPort } from './http-port.js'
-import { readCacheOptions } from './cache-options.js'
+import { readCacheOptions, parseRefreshKey } from './cache-options.js'
 import {
   resolveSecurityContext,
   sanitizeForLog,
@@ -35,6 +36,7 @@ export interface RestHandlers {
   handleDryRunPost<TRes>(port: HttpPort<TRes>, getBaseSecurityContext: BaseSecurityContextThunk): Promise<TRes>
   handleBatchPost<TRes>(port: HttpPort<TRes>, getBaseSecurityContext: BaseSecurityContextThunk): Promise<TRes>
   handleExplainPost<TRes>(port: HttpPort<TRes>, getBaseSecurityContext: BaseSecurityContextThunk): Promise<TRes>
+  handleRefreshKeysPost<TRes>(port: HttpPort<TRes>, getBaseSecurityContext: BaseSecurityContextThunk): Promise<TRes>
 }
 
 export function createRestHandlers(semanticLayer: SemanticLayerCompiler): RestHandlers {
@@ -176,7 +178,7 @@ export function createRestHandlers(semanticLayer: SemanticLayerCompiler): RestHa
     getBaseSecurityContext: BaseSecurityContextThunk
   ): Promise<TRes> {
     try {
-      const body = (await port.getBody()) as { queries?: SemanticQuery[] }
+      const body = (await port.getBody()) as { queries?: SemanticQuery[]; refreshKeys?: unknown }
       const queries = body?.queries
 
       if (!queries || !Array.isArray(queries)) {
@@ -188,7 +190,12 @@ export function createRestHandlers(semanticLayer: SemanticLayerCompiler): RestHa
 
       // Extract security context ONCE (shared across all queries)
       const securityContext = await resolveSecurityContext(getBaseSecurityContext, (n) => port.getHeader(n))
-      const cacheOptions = readCacheOptions((n) => port.getHeader(n))
+      // Optional `refreshKeys` body array: one composite key per query (invalid entries ignored)
+      const bodyRefreshKeys: unknown = body.refreshKeys
+      const refreshKeys = Array.isArray(bodyRefreshKeys)
+        ? queries.map((_, index): string | undefined => parseRefreshKey(bodyRefreshKeys[index]))
+        : undefined
+      const cacheOptions = { ...readCacheOptions((n) => port.getHeader(n)), refreshKeys }
 
       const batchResult = await handleBatchRequest(queries, securityContext, semanticLayer, cacheOptions)
       return port.send(200, batchResult)
@@ -228,8 +235,53 @@ export function createRestHandlers(semanticLayer: SemanticLayerCompiler): RestHa
     }
   }
 
+  /**
+   * `POST /refresh-keys` with `{ queries }` → `{ keys: [{ key, checkAfterSeconds }] }`.
+   * Same security-context resolution and query validation as `/load`
+   * (unknown members → the same 400); keys leave the server hashed.
+   */
+  async function handleRefreshKeysPost<TRes>(
+    port: HttpPort<TRes>,
+    getBaseSecurityContext: BaseSecurityContextThunk
+  ): Promise<TRes> {
+    try {
+      const body = (await port.getBody()) as { queries?: SemanticQuery[] }
+      const queries = body?.queries
+
+      if (!queries || !Array.isArray(queries)) {
+        return port.send(400, formatErrorResponse('Request body must contain a "queries" array', 400))
+      }
+      if (queries.length === 0) {
+        return port.send(400, formatErrorResponse('Queries array cannot be empty', 400))
+      }
+
+      const securityContext = await resolveSecurityContext(getBaseSecurityContext, (n) => port.getHeader(n))
+
+      for (const query of queries) {
+        const validation = semanticLayer.validateQuery(query, securityContext)
+        if (!validation.isValid) {
+          return port.send(400, formatErrorResponse(
+            `Query validation failed: ${validation.errors.join(', ')}`,
+            400,
+            validation.issues
+          ))
+        }
+      }
+
+      const keys = await semanticLayer.getRefreshKeys(queries, securityContext)
+      return port.send(200, { keys })
+    } catch (error) {
+      console.error('Refresh keys error:', sanitizeForLog(error))
+      return port.send(500, formatErrorResponse(
+        error instanceof Error ? error.message : 'Refresh key evaluation failed',
+        500
+      ))
+    }
+  }
+
   return {
     handleMetaGet,
+    handleRefreshKeysPost,
     handleSqlGet,
     handleSqlPost,
     handleDryRunGet,

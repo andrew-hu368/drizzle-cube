@@ -274,3 +274,132 @@ describe('createCubeHttpHandler — x-cache-max-age', () => {
     })
   }
 })
+
+describe('createCubeHttpHandler — x-refresh-key', () => {
+  const getBaseSC = async () => ({ organisationId: 'org1' })
+  const query = { measures: ['Employees.count'] }
+
+  async function optionsFor(endpoint: 'loadPost' | 'batch', headers: Record<string, string>) {
+    const semanticLayer = createStubSemanticLayer()
+    const handler = createCubeHttpHandler({ semanticLayer, onError: vi.fn() })
+    if (endpoint === 'loadPost') {
+      await handler.handleLoadPost(createFakePort({ body: query, headers }), getBaseSC)
+    } else {
+      await handler.handleBatchPost(createFakePort({ body: { queries: [query] }, headers }), getBaseSC)
+    }
+    return semanticLayer.executeMultiCubeQuery.mock.calls.map((call: unknown[]) => call[2])
+  }
+
+  for (const endpoint of ['loadPost', 'batch'] as const) {
+    it(`${endpoint}: forwards a valid refresh key and ignores an invalid one`, async () => {
+      const key = '0123456789abcdef0123456789abcdef'
+      for (const options of await optionsFor(endpoint, { 'x-refresh-key': key })) {
+        expect(options).toEqual(expect.objectContaining({ refreshKey: key }))
+      }
+      for (const value of ['', 'has space', 'x'.repeat(129), 'semi;colon']) {
+        for (const options of await optionsFor(endpoint, { 'x-refresh-key': value })) {
+          expect(options?.refreshKey, `x-refresh-key: ${JSON.stringify(value)}`).toBeUndefined()
+        }
+      }
+    })
+  }
+
+  it('returns the result fingerprint on /load and /batch', async () => {
+    const semanticLayer = createStubSemanticLayer({
+      executeMultiCubeQuery: vi.fn(async () => ({ data: [{ 'Employees.count': 5 }], fingerprint: 'fp-1' }))
+    })
+    const handler = createCubeHttpHandler({ semanticLayer, onError: vi.fn() })
+    const loadPort = createFakePort({ body: query })
+    const batchPort = createFakePort({ body: { queries: [query] } })
+
+    await handler.handleLoadPost(loadPort, getBaseSC)
+    await handler.handleBatchPost(batchPort, getBaseSC)
+
+    expect(loadPort.sent[0].body).toEqual(expect.objectContaining({
+      results: [expect.objectContaining({ fingerprint: 'fp-1' })]
+    }))
+    expect(batchPort.sent[0].body).toEqual({
+      results: [expect.objectContaining({ success: true, results: [expect.objectContaining({ fingerprint: 'fp-1' })] })]
+    })
+  })
+})
+
+describe('createCubeHttpHandler — POST /refresh-keys', () => {
+  const getBaseSC = async () => ({ organisationId: 'org1' })
+  const queries = [{ measures: ['Employees.count'] }, { measures: ['Departments.count'] }]
+  const keys = [{ key: 'a'.repeat(32), checkAfterSeconds: 10 }, { key: null, checkAfterSeconds: 120 }]
+
+  it('returns the keys with no-store, resolving the security context like /load', async () => {
+    const semanticLayer = createStubSemanticLayer({ getRefreshKeys: vi.fn(async () => keys) })
+    const handler = createCubeHttpHandler({ semanticLayer, onError: vi.fn() })
+    const port = createFakePort({ body: { queries }, headers: { 'x-dc-locale': 'nl-NL' } })
+
+    await handler.handleRefreshKeysPost(port, getBaseSC)
+
+    expect(port.sent).toEqual([{ status: 200, body: { keys } }])
+    expect(port.headersSet['Cache-Control']).toBe('private, no-store')
+    expect(semanticLayer.getRefreshKeys).toHaveBeenCalledWith(
+      queries,
+      expect.objectContaining({ organisationId: 'org1', locale: 'nl-NL' })
+    )
+    // Same context resolution as /load
+    const loadLayer = createStubSemanticLayer()
+    await createCubeHttpHandler({ semanticLayer: loadLayer, onError: vi.fn() })
+      .handleLoadPost(createFakePort({ body: queries[0], headers: { 'x-dc-locale': 'nl-NL' } }), getBaseSC)
+    expect(semanticLayer.getRefreshKeys.mock.calls[0][1]).toEqual(loadLayer.executeMultiCubeQuery.mock.calls[0][1])
+  })
+
+  it('rejects an unknown member with the same 400 as /load, without evaluating keys', async () => {
+    const invalid = {
+      isValid: false,
+      errors: ["Measure 'Employees.nope' not found"],
+      issues: [{ member: 'Employees.nope', kind: 'measure' }]
+    }
+    const semanticLayer = createStubSemanticLayer({
+      validateQuery: vi.fn(() => invalid),
+      getRefreshKeys: vi.fn()
+    })
+    const handler = createCubeHttpHandler({ semanticLayer, onError: vi.fn() })
+    const refreshPort = createFakePort({ body: { queries: [{ measures: ['Employees.nope'] }] } })
+    const loadPort = createFakePort({ body: { measures: ['Employees.nope'] } })
+
+    await handler.handleRefreshKeysPost(refreshPort, getBaseSC)
+    await handler.handleLoadPost(loadPort, getBaseSC)
+
+    expect(refreshPort.sent[0].status).toBe(400)
+    expect(refreshPort.sent).toEqual(loadPort.sent)
+    expect(semanticLayer.getRefreshKeys).not.toHaveBeenCalled()
+  })
+
+  it('rejects a body without a non-empty queries array', async () => {
+    const semanticLayer = createStubSemanticLayer({ getRefreshKeys: vi.fn() })
+    const handler = createCubeHttpHandler({ semanticLayer, onError: vi.fn() })
+    for (const body of [{}, { queries: 'x' }, { queries: [] }]) {
+      const port = createFakePort({ body })
+      await handler.handleRefreshKeysPost(port, getBaseSC)
+      expect(port.sent[0].status).toBe(400)
+    }
+    expect(semanticLayer.getRefreshKeys).not.toHaveBeenCalled()
+  })
+})
+
+describe('createCubeHttpHandler — /batch per-query refreshKeys', () => {
+  const getBaseSC = async () => ({ organisationId: 'org1' })
+  const q1 = { measures: ['Employees.count'] }
+  const q2 = { measures: ['Departments.count'] }
+
+  it('applies each body refresh key to its own query, falling back to the header', async () => {
+    const semanticLayer = createStubSemanticLayer()
+    const handler = createCubeHttpHandler({ semanticLayer, onError: vi.fn() })
+    await handler.handleBatchPost(createFakePort({
+      body: { queries: [q1, q2, q1], refreshKeys: ['key-1', null, 'bad key'] },
+      headers: { 'x-refresh-key': 'header-key' }
+    }), getBaseSC)
+
+    const refreshKeys = semanticLayer.executeMultiCubeQuery.mock.calls.map((call: unknown[]) => {
+      const options = call[2] as { refreshKey?: string } | undefined
+      return options?.refreshKey
+    })
+    expect(refreshKeys).toEqual(['key-1', 'header-key', 'header-key'])
+  })
+})

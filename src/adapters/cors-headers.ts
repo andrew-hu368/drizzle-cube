@@ -7,10 +7,11 @@
  * - `X-Cache-Max-Age` — the oldest cached result accepted (interval refresh
  *   sends one on every tick)
  * - `X-Cache-Control` — `no-cache` on a cache bust
+ * - `X-Refresh-Key` — the composite refresh key behind a change-triggered refetch
  */
 
 /** Client request headers, in the casing added to an allow list. */
-export const CLIENT_REQUEST_HEADERS = ['X-DC-Locale', 'X-Cache-Max-Age', 'X-Cache-Control'] as const
+export const CLIENT_REQUEST_HEADERS = ['X-DC-Locale', 'X-Cache-Max-Age', 'X-Cache-Control', 'X-Refresh-Key'] as const
 
 /**
  * Add each of `required` to an allow list (array or comma-separated string)

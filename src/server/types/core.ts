@@ -71,6 +71,12 @@ export interface QueryResult {
    * the query asked for it with `total: true`.
    */
   total?: number
+  /**
+   * Hash of the result rows (and `total`). Identical rows give an identical
+   * fingerprint on a cache miss and a cache hit, so callers can tell whether a
+   * refetch returned anything new. Computed once per execution.
+   */
+  fingerprint?: string
 }
 
 /**
@@ -121,6 +127,14 @@ export interface ExecutionOptions {
    * Set by SemanticLayerCompiler; callers do not supply it.
    */
   cubeSetKey?: string
+  /**
+   * Composite refresh key the caller saw (from `getRefreshKeys`), appended to
+   * the result cache key. A refetch after a key change misses once and every
+   * other viewer in the same context who saw the change hits the new entry.
+   * It only selects among entries of the caller's own context, so it needs no
+   * trust.
+   */
+  refreshKey?: string
 }
 
 /**

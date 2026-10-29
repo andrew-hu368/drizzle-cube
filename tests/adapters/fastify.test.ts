@@ -88,6 +88,20 @@ describe('Fastify Adapter', () => {
     expect(data.pivotQuery).toBeDefined()
   })
 
+  it('should handle POST /cubejs-api/v1/refresh-keys', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/cubejs-api/v1/refresh-keys',
+      payload: { queries: [{ measures: ['Employees.count'] }] }
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.headers['cache-control']).toBe('private, no-store')
+    expect(JSON.parse(response.payload)).toEqual({
+      keys: [{ key: expect.stringMatching(/^[0-9a-f]{32}$/), checkAfterSeconds: 10 }]
+    })
+  })
+
   it('should handle GET /cubejs-api/v1/meta', async () => {
     const response = await app.inject({
       method: 'GET',

@@ -39,6 +39,7 @@ import { FilterCachePreloader } from './execution/filter-cache-preloader.js'
 import { ModeRouter } from './execution/mode-router.js'
 import type { QueryExecutionMode } from './execution/mode-router.js'
 import { QueryResultCache } from './execution/query-result-cache.js'
+import { fingerprintResult } from './execution/result-fingerprint.js'
 import { normalizeTimeDimensions } from './execution/query-normalizer.js'
 import { ComparisonQueryBuilder } from './builders/comparison-query-builder.js'
 import type { NormalizedPeriod } from './builders/comparison-query-builder.js'
@@ -188,7 +189,7 @@ export class QueryExecutor {
       // Check cache BEFORE expensive operations (after validation, includes security context)
       // Entries older than max-age are a miss; max-age 0 (or skipCache) skips the
       // lookup. The fresh result is still cached later either way.
-      const cacheKey = this.resultCache.generateKey(query, securityContext, options?.cubeSetKey)
+      const cacheKey = this.resultCache.generateKey(query, securityContext, options?.cubeSetKey, options?.refreshKey)
       const cached = await this.resultCache.lookup(cacheKey, options)
       if (cached) {
         return cached
@@ -341,21 +342,6 @@ export class QueryExecutor {
   }
 
   /**
-   * Execute a comparison query with caching support
-   * Wraps executeComparisonQuery with cache set logic
-   */
-  private async executeComparisonQueryWithCache(
-    cubes: Map<string, Cube>,
-    query: SemanticQuery,
-    securityContext: SecurityContext,
-    cacheKey: string | undefined
-  ): Promise<QueryResult> {
-    const result = await this.executeComparisonQuery(cubes, query, securityContext)
-    await this.resultCache.store(cacheKey, result)
-    return result
-  }
-
-  /**
    * Execute a comparison query with multiple date periods
    * Expands compareDateRange into multiple sub-queries and merges results
    */
@@ -372,7 +358,7 @@ export class QueryExecutor {
       // Execute using the standard path (this.execute handles the rest)
       // Note: We call executeStandardQuery to avoid recursion. Periods are
       // gap-filled by default so each period has a row per bucket to align on.
-      const result = await this.executeStandardQuery(cubes, periodQuery, securityContext, undefined, true)
+      const result = await this.executeStandardQuery(cubes, periodQuery, securityContext, true)
 
       return { result, period: periods[periodIndex] }
     })
@@ -419,25 +405,6 @@ export class QueryExecutor {
       periods,
       periodQueries
     }
-  }
-
-  /**
-   * Execute an analysis query (funnel/flow/retention) with caching support.
-   * Wraps the inner execute callback with cache-set logic; the three analysis
-   * modes share identical wrapper behaviour, differing only in which inner
-   * execute method they invoke.
-   *
-   * Cache metadata is intentionally NOT attached here: fresh results across all
-   * query modes (regular, comparison, and analysis) uniformly carry no `cache`
-   * field — only cache *hits* (handled in execute()) carry cache metadata.
-   */
-  private async executeAnalysisQueryWithCache(
-    innerExecute: () => Promise<QueryResult>,
-    cacheKey: string | undefined
-  ): Promise<QueryResult> {
-    const result = await innerExecute()
-    await this.resultCache.store(cacheKey, result)
-    return result
   }
 
   /**
@@ -599,12 +566,9 @@ export class QueryExecutor {
    *
    * This is the single core execution path used by both the regular query mode
    * and comparison-mode period sub-queries. It always runs the dev-time
-   * security-context validation and propagates planner warnings; the optional
-   * `cacheKey` controls whether the fresh result is written to the cache.
+   * security-context validation and propagates planner warnings. It does not
+   * write the cache: `executeQueryByModeWithCache` stores the final result.
    *
-   * @param cacheKey - When provided (and a cache provider is configured), the
-   *   fresh result is written to the cache. Pass `undefined` to skip caching
-   *   (e.g. comparison period sub-queries cache at the comparison level).
    * @param fillByDefault - Gap-fill time dimensions that neither the query nor
    *   the cube configures. Only comparison period sub-queries pass `true`.
    */
@@ -612,7 +576,6 @@ export class QueryExecutor {
     cubes: Map<string, Cube>,
     query: SemanticQuery,
     securityContext: SecurityContext,
-    cacheKey?: string | undefined,
     fillByDefault = false
   ): Promise<QueryResult> {
     // Rewrite filter-only time dimensions, and drop dimensions that a granular time dimension repeats.
@@ -664,7 +627,6 @@ export class QueryExecutor {
       total: query.total ? await this.executeTotalCount(physicalPlan, planQuery, context) : undefined
     }
 
-    await this.resultCache.store(cacheKey, result)
     return result
   }
 
@@ -1021,6 +983,15 @@ export class QueryExecutor {
     }
   }
 
+  /**
+   * Run the query for its mode, stamp the result fingerprint and write the
+   * result to the cache (when `cacheKey` is set). The fingerprint is stored
+   * with the entry, so a later hit returns it without re-hashing.
+   *
+   * Cache metadata is intentionally NOT attached here: fresh results across all
+   * query modes uniformly carry no `cache` field — only cache *hits* (handled
+   * in execute()) carry cache metadata.
+   */
   private async executeQueryByModeWithCache(
     mode: QueryExecutionMode,
     cubes: Map<string, Cube>,
@@ -1029,17 +1000,17 @@ export class QueryExecutor {
     cacheKey: string | undefined
   ): Promise<QueryResult> {
     const executors: Record<QueryExecutionMode, () => Promise<QueryResult>> = {
-      regular: () => this.executeStandardQuery(cubes, query, securityContext, cacheKey),
-      comparison: () => this.executeComparisonQueryWithCache(cubes, query, securityContext, cacheKey),
-      funnel: () => this.executeAnalysisQueryWithCache(
-        () => this.executeFunnelQuery(cubes, query, securityContext), cacheKey),
-      flow: () => this.executeAnalysisQueryWithCache(
-        () => this.executeFlowQuery(cubes, query, securityContext), cacheKey),
-      retention: () => this.executeAnalysisQueryWithCache(
-        () => this.executeRetentionQuery(cubes, query, securityContext), cacheKey)
+      regular: () => this.executeStandardQuery(cubes, query, securityContext),
+      comparison: () => this.executeComparisonQuery(cubes, query, securityContext),
+      funnel: () => this.executeFunnelQuery(cubes, query, securityContext),
+      flow: () => this.executeFlowQuery(cubes, query, securityContext),
+      retention: () => this.executeRetentionQuery(cubes, query, securityContext)
     }
 
-    return executors[safeKey(mode) as QueryExecutionMode]()
+    const result = await executors[safeKey(mode) as QueryExecutionMode]()
+    const fingerprinted: QueryResult = { ...result, fingerprint: fingerprintResult(result) }
+    await this.resultCache.store(cacheKey, fingerprinted)
+    return fingerprinted
   }
 
   private async generateSqlForMode(
