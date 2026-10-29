@@ -51,21 +51,6 @@ export function resolveEffectiveRefresh(
 }
 
 /**
- * The interval a portlet's subscription runs at right now, or undefined when
- * it should not subscribe: no effective refresh, refresh stopped (edit mode or
- * dashboard pause), the portlet paused, or the tab hidden with
- * `pauseWhenHidden`.
- */
-export function resolveLiveRefreshSeconds(
-  effective: EffectiveRefresh | undefined,
-  state: { stopped: boolean; portletPaused: boolean; documentHidden: boolean }
-): number | undefined {
-  if (!effective || state.stopped || state.portletPaused) return undefined
-  if (state.documentHidden && effective.pauseWhenHidden) return undefined
-  return effective.intervalSeconds
-}
-
-/**
  * When a result's rows were computed: the cache's computed time on a hit,
  * otherwise the server's response time.
  */

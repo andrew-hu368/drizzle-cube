@@ -1,8 +1,8 @@
 /**
  * Portlet change detection (issue #271, Phase 1b): with
  * `subscribeIntervalSeconds` set, the portlet's active hook watches its server
- * queries through one /refresh-keys call per tick and refetches, with the new
- * key, only when a key changed. A refetch with the same fingerprint keeps the
+ * queries' refresh keys and refetches, with the new key, only when a key
+ * changed. A refetch with the same fingerprint keeps the
  * rows the chart already has.
  *
  * Runs the real query hooks against MSW and asserts on the requests the server
@@ -104,6 +104,8 @@ describe('usePortletQueryResults change detection', () => {
     keys = new Map()
     fingerprint = 'fp-1'
     vi.useFakeTimers({ shouldAdvanceTime: true })
+    // Key checks are aligned to the clock; start on a round time
+    vi.setSystemTime(new Date('2026-10-23T10:00:00.000Z'))
     server.use(
       http.get('*/cubejs-api/v1/load', ({ request }) => {
         loads.push({ refreshKeys: [request.headers.get('x-refresh-key')] })
@@ -163,33 +165,20 @@ describe('usePortletQueryResults change detection', () => {
       await waitFor(() => expect(loads).toHaveLength(2))
       expect(loads[1].refreshKeys).toEqual(watched.map((_, index) => (index === watched.length - 1 ? 'k2' : 'k1')))
     })
-
-    it('stops checking without an interval, and checks again (refetching a change) when it comes back', async () => {
-      const { rerender } = renderPortlet(params)
-      await waitFor(() => expect(keyChecks).toHaveLength(1))
-
-      rerender({ isVisible: true, subscribeIntervalSeconds: undefined })
-      keys.set(JSON.stringify(watched[0]), 'changed-while-paused')
-      await act(() => vi.advanceTimersByTimeAsync(30_000))
-      expect(keyChecks).toHaveLength(1)
-      expect(loads).toHaveLength(1)
-
-      rerender({ isVisible: true, subscribeIntervalSeconds: 10 })
-      await waitFor(() => expect(loads).toHaveLength(2))
-    })
   })
 
-  it('keeps the rows of a single-query portlet when the refetch has the same fingerprint', async () => {
-    const { result } = renderPortlet({ activeQuery: singleQuery })
-    await waitFor(() => expect(result.current.resultSet).not.toBeNull())
+  it('stops checking without an interval, and checks again (refetching a change) when it comes back', async () => {
+    const { rerender } = renderPortlet({ activeQuery: singleQuery })
     await waitFor(() => expect(keyChecks).toHaveLength(1))
-    const rows = result.current.resultSet?.rawData()
 
-    keys.set(JSON.stringify(singleQuery), 'k2')
-    await act(() => vi.advanceTimersByTimeAsync(10_000))
+    rerender({ isVisible: true, subscribeIntervalSeconds: undefined })
+    keys.set(JSON.stringify(singleQuery), 'changed-while-paused')
+    await act(() => vi.advanceTimersByTimeAsync(30_000))
+    expect(keyChecks).toHaveLength(1)
+    expect(loads).toHaveLength(1)
+
+    rerender({ isVisible: true, subscribeIntervalSeconds: 10 })
     await waitFor(() => expect(loads).toHaveLength(2))
-    await waitFor(() => expect(result.current.isFetching).toBe(false))
-    expect(result.current.resultSet?.rawData()).toBe(rows)
   })
 
   it('keeps the merged rows of a multi-query portlet when every fingerprint is unchanged', async () => {

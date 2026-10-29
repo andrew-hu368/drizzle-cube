@@ -4,10 +4,11 @@
  */
 
 import React from 'react'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render as rtlRender, screen, fireEvent, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import MobileStackedLayout from '../../../../src/client/components/MobileStackedLayout'
+import { DashboardStoreProvider } from '../../../../src/client/stores/dashboardStore'
 import type { DashboardConfig, PortletConfig, DashboardFilter } from '../../../../src/client/types'
 import type { ColorPalette } from '../../../../src/client/utils/colorPalettes'
 
@@ -122,6 +123,9 @@ function createTestConfig(portlets: PortletConfig[] = []): DashboardConfig {
     layoutMode: 'grid'
   }
 }
+
+// Live refresh reads the dashboard store, which wraps the layout in the app
+const render = (ui: React.ReactElement) => rtlRender(ui, { wrapper: DashboardStoreProvider })
 
 describe('MobileStackedLayout', () => {
   beforeEach(() => {

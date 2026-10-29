@@ -19,7 +19,7 @@ import { useCubeFeatures } from '../../providers/CubeFeaturesProvider.js'
 import { useDebounceQuery } from '../useDebounceQuery.js'
 import { stableStringify } from '../../shared/queryKey.js'
 import type { CubeQuery } from '../../types.js'
-import { shareUnchangedRawData } from '../../client/resultFingerprint.js'
+import { keepUnchangedResult } from '../../client/resultFingerprint.js'
 import { useQuerySubscription } from './useQuerySubscription.js'
 import { createRefetchMaxAgeTracker, type MaxAgeOptions } from '../../client/maxAge.js'
 import { resultSetComputedAt } from '../../utils/freshness.js'
@@ -289,8 +289,8 @@ export function useFunnelQuery(
     // stale, so the query fetches with it once enabled
     staleTime: () => (refetchMaxAge.hasPendingMaxAge() ? 0 : 60000),
     gcTime: 5 * 60 * 1000, // 5 minute garbage collection
-    // Same result fingerprint as the rows shown: keep those rows, take the new freshness
-    structuralSharing: shareUnchangedRawData,
+    // Same result fingerprint as the data shown: keep that data
+    structuralSharing: keepUnchangedResult,
   })
 
   // Track when query successfully executes in manual refresh mode
@@ -325,13 +325,11 @@ export function useFunnelQuery(
 
   // Transform server result to chart data
   // Validate step count matches to prevent showing stale data during transitions
-  // Keyed on the rows, so a refetch that kept them (same fingerprint) keeps the chart data
-  const resultRows = queryResult.data?.rawData
   const chartData = useMemo<FunnelChartData[]>(() => {
-    if (!resultRows) return []
+    if (!queryResult.data?.rawData) return []
 
     // Check if data step count matches expected step count
-    const dataStepCount = resultRows.length
+    const dataStepCount = queryResult.data.rawData.length
 
     if (dataStepCount !== expectedStepCount) {
       // Data is stale (from a different query) - don't return it
@@ -340,10 +338,10 @@ export function useFunnelQuery(
     }
 
     return transformServerFunnelResult(
-      resultRows,
+      queryResult.data.rawData,
       stepNames
     )
-  }, [resultRows, expectedStepCount, stepNames])
+  }, [queryResult.data, expectedStepCount, stepNames])
 
   // Build step results from chart data (for backward compatibility)
   const stepResults = useMemo<FunnelStepResult[]>(() => {
@@ -425,18 +423,11 @@ export function useFunnelQuery(
   }, [refetchMaxAge, serverQuery, skip, enabled, result, currentQueryKey, refetchQuery])
 
   // Subscription: refetch when the funnel's refresh key changes
-  const subscribedQueries = useMemo(
-    () => (serverQuery ? [serverQuery as unknown as CubeQuery] : null),
-    [serverQuery]
-  )
-  const subscriptionRefetch = useCallback((options?: MaxAgeOptions) => {
-    void execute(options)
-  }, [execute])
-  const { checkedAt } = useQuerySubscription({
-    queries: subscribedQueries,
+  const { getCheckedAt } = useQuerySubscription({
+    queries: serverQuery ? (serverQuery as unknown as CubeQuery) : null,
     subscribe,
     active: !manualRefresh && shouldExecute && enabled,
-    refetch: subscriptionRefetch
+    refetch: execute
   })
 
   /**
@@ -473,7 +464,7 @@ export function useFunnelQuery(
     serverQuery,
     cacheInfo: queryResult.data?.cacheInfo ?? null,
     computedAt: queryResult.data?.computedAt ?? null,
-    checkedAt,
+    getCheckedAt,
     // Manual refresh mode support
     needsRefresh,
   }

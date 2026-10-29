@@ -287,8 +287,8 @@ export interface UseFunnelQueryResult {
   /** When the rows were computed on the server (cache time on a hit, else response time) */
   computedAt?: string | null
 
-  /** When the server last confirmed the query's refresh key (ISO), while subscribed */
-  checkedAt?: string
+  /** When the server last confirmed the query's refresh key (ISO), while subscribed. A getter: a check does not re-render */
+  getCheckedAt?: () => string | undefined
 
   /** Error if execution failed */
   error: Error | null

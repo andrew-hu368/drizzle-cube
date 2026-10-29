@@ -31,9 +31,9 @@ import RowManagedLayout from '../RowManagedLayout.js'
 import PortletGroupCard from '../PortletGroupCard.js'
 import type { PortletCardVariant } from '../dashboardPortletCard/cardStyles.js'
 import { findPortletLocation, removeFromGroup, type SnapEdge } from '../../hooks/dashboard/groupUtils.js'
+import { resolveEffectiveRefresh } from '../../utils/freshness.js'
 import { ensureAnalysisConfig } from '../../utils/configMigration.js'
 import { useCubeFeatures } from '../../providers/CubeProvider.js'
-import { useDashboardLiveRefresh } from '../../hooks/dashboard/useDashboardLiveRefresh.js'
 import { useResponsiveDashboard } from '../../hooks/useResponsiveDashboard.js'
 import { ScrollContainerProvider } from '../../providers/ScrollContainerContext.js'
 import { useDashboard } from '../../hooks/useDashboardHook.js'
@@ -718,32 +718,26 @@ export default function DashboardCoordinator({
   }, [handlePortletDragEnd])
 
   // Handle portlet refresh - use action from hook
-  // { bustCache: true } (shift+click) is max-age 0; interval ticks pass { maxAgeSeconds }
+  // { bustCache: true } (shift+click) is max-age 0
   const handlePortletRefresh = useCallback((portletId: string, options?: MaxAgeOptions) => {
     actionsRef.current.refreshPortlet(portletId, options)
   }, [])
 
-  // Live refresh (features.refresh): a portlet with a refresh interval
-  // subscribes its queries to change detection (one /refresh-keys call per
-  // tick for the page) and refetches when their keys change. Edit mode and the
-  // dashboard-level pause stop every subscription; a paused portlet stops its own.
+  // Live refresh (features.refresh): each portlet with a refresh interval
+  // subscribes its queries to change detection (usePortletLiveRefresh) and
+  // refetches when their keys change. This holds the dashboard-level state.
   const isRefreshPaused = useDashboardStore(state => state.isRefreshPaused)
-  const pausedPortletIds = useDashboardStore(state => state.pausedPortletIds)
   const toggleRefreshPaused = useDashboardStore(state => state.toggleRefreshPaused)
   const togglePortletRefreshPaused = useDashboardStore(state => state.togglePortletRefreshPaused)
-  const { hasRefresh, liveIntervalSeconds } = useDashboardLiveRefresh({
-    portlets: config.portlets,
-    dashboardRefresh: config.refresh,
-    features,
-    stopped: isEditMode || isRefreshPaused,
-    pausedPortletIds,
-  })
+  const hasRefresh = useMemo(
+    () => config.portlets.some(portlet => resolveEffectiveRefresh(portlet.refresh, config.refresh, features)),
+    [config.portlets, config.refresh, features]
+  )
   const refreshState = useMemo(() => ({
     hasRefresh,
     isPaused: isRefreshPaused,
     togglePaused: toggleRefreshPaused,
-    liveIntervalSeconds,
-  }), [hasRefresh, isRefreshPaused, toggleRefreshPaused, liveIntervalSeconds])
+  }), [hasRefresh, isRefreshPaused, toggleRefreshPaused])
 
   // Handle portlet save with scroll-to-new behavior
   const handlePortletSave = useCallback(async (portletData: PortletConfig | Omit<PortletConfig, 'id' | 'x' | 'y'>) => {

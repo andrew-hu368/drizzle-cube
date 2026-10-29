@@ -91,9 +91,6 @@ export function fillChartRows(
   return applyGapFilling(rows, query, query.measures ?? [], shouldFill)
 }
 
-/** Filled rows per input rows array, per fill options and query. */
-const filledRowsCache = new WeakMap<object, Map<string, Record<string, unknown>[]>>()
-
 /**
  * Wrap a result set so its rows are gap-filled for a chart. The underlying
  * result set (and the query cache holding it) stays raw, so changing the chart
@@ -107,23 +104,8 @@ export function withChartGapFilling(
   const query = resultQuery(resultSet)
   if (!query?.timeDimensions?.length) return resultSet
 
-  // The same input rows always fill to the same output array, so a refetch
-  // that kept its previous rows (unchanged result fingerprint) does not hand
-  // the chart new arrays.
-  const cacheKey = `${options.fillMissingDates}|${JSON.stringify(query)}`
-  const fill = (rows: Record<string, unknown>[]) => {
-    let byOptions = filledRowsCache.get(rows)
-    if (!byOptions) {
-      byOptions = new Map()
-      filledRowsCache.set(rows, byOptions)
-    }
-    let filled = byOptions.get(cacheKey)
-    if (!filled) {
-      filled = fillChartRows(rows, query, resultSet.annotation(), options)
-      byOptions.set(cacheKey, filled)
-    }
-    return filled
-  }
+  const fill = (rows: Record<string, unknown>[]) =>
+    fillChartRows(rows, query, resultSet.annotation(), options)
 
   let raw: Record<string, unknown>[] | undefined
   let table: Record<string, unknown>[] | undefined
@@ -137,7 +119,6 @@ export function withChartGapFilling(
     loadResponse: resultSet.loadResponse,
     cacheInfo: resultSet.cacheInfo ? () => resultSet.cacheInfo?.() : undefined,
     lastRefreshTime: resultSet.lastRefreshTime ? () => resultSet.lastRefreshTime?.() : undefined,
-    totalCount: resultSet.totalCount ? () => resultSet.totalCount?.() : undefined,
-    fingerprint: resultSet.fingerprint ? () => resultSet.fingerprint?.() : undefined
+    totalCount: resultSet.totalCount ? () => resultSet.totalCount?.() : undefined
   }
 }

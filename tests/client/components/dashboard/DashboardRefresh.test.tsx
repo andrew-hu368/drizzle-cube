@@ -7,9 +7,8 @@
  * it should not subscribe) and whose imperative `refresh` records calls, so
  * these tests observe exactly what the dashboard and the refresh button ask a
  * portlet to do. The stub also reports freshness the way the real portlet
- * does, to drive the header indicator. The subscription itself (one
- * /refresh-keys call per tick, refetch on change) is covered by the
- * coordinator, client and hook tests.
+ * does, to drive the header indicator. The subscription itself (key checks,
+ * refetch on change) is covered by the coordinator, client and hook tests.
  */
 
 import React, { useEffect, useImperativeHandle } from 'react'
@@ -151,7 +150,7 @@ describe('Dashboard interval refresh', () => {
     vi.useRealTimers()
   })
 
-  it('subscribes each portlet at its effective interval, and never ticks a refresh', async () => {
+  it('subscribes each portlet at its effective interval', async () => {
     const config: DashboardConfig = {
       layoutMode: 'grid',
       refresh: { intervalSeconds: 30 },
@@ -160,15 +159,6 @@ describe('Dashboard interval refresh', () => {
     render(<DashboardGrid config={config} />, { wrapper: TestWrapper })
 
     expect(subscribeByTitle).toMatchObject({ a: 30, b: 30, c: 10 })
-    await advanceSeconds(60)
-    expect(refreshCalls).toHaveLength(0)
-  })
-
-  it('does not subscribe a portlet without an interval', async () => {
-    const config: DashboardConfig = { layoutMode: 'grid', portlets: [portlet('a', { intervalSeconds: 15 }), portlet('b')] }
-    render(<DashboardGrid config={config} />, { wrapper: TestWrapper })
-    expect(subscribeByTitle.a).toBe(15)
-    expect(subscribeByTitle.b).toBeUndefined()
   })
 
   it('unsubscribes in edit mode', async () => {
@@ -250,13 +240,15 @@ describe('Dashboard interval refresh', () => {
     expect(subscribeByTitle.a).toBe(10)
   })
 
-  it('tells each chart whether it refreshes on an interval', async () => {
+  it('tells each chart whether it refreshes on an interval, and subscribes only those', async () => {
     const config: DashboardConfig = {
       layoutMode: 'grid',
       portlets: [portlet('a', { intervalSeconds: 30 }), portlet('b')]
     }
     render(<DashboardGrid config={config} />, { wrapper: TestWrapper })
     expect(intervalRefreshByTitle).toMatchObject({ a: true, b: false })
+    expect(subscribeByTitle.a).toBe(30)
+    expect(subscribeByTitle.b).toBeUndefined()
   })
 
   it('keeps the refresh button on the same path (shift+click is a bust)', async () => {
@@ -355,7 +347,7 @@ describe('Dashboard interval refresh', () => {
     it('shows checked-at, and stays fresh while change detection keeps confirming old rows', async () => {
       vi.setSystemTime(new Date('2026-10-23T10:05:00Z'))
       // Rows computed five minutes ago, confirmed unchanged ten seconds ago
-      freshnessByTitle.a = { computedAt: '2026-10-23T10:00:00Z', checkedAt: '2026-10-23T10:04:50Z', isFetching: false }
+      freshnessByTitle.a = { computedAt: '2026-10-23T10:00:00Z', getCheckedAt: () => '2026-10-23T10:04:50Z', isFetching: false }
       const config: DashboardConfig = { layoutMode: 'grid', portlets: [portlet('a', { intervalSeconds: 30 })] }
       render(<DashboardGrid config={config} />, { wrapper: TestWrapper })
 
@@ -392,8 +384,6 @@ describe('Dashboard interval refresh', () => {
       expect(screen.queryByTestId('portlet-freshness')).toBeNull()
       expect(screen.queryByTestId('portlet-refresh-pause')).toBeNull()
       expect(subscribeByTitle.a).toBeUndefined()
-      await advanceSeconds(60)
-      expect(refreshCalls).toHaveLength(0)
     })
   })
 })

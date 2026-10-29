@@ -19,8 +19,8 @@ const CLOCK_TICK_MS = 5000
 export interface DataFreshnessIndicatorProps {
   /** When the rows were computed (ISO string) */
   computedAt?: string
-  /** When change detection last confirmed the rows are current (ISO string) */
-  checkedAt?: string
+  /** When change detection last confirmed the rows are current (ISO string); read on each clock tick */
+  getCheckedAt?: () => string | undefined
   /** Whether a fetch is in flight */
   isFetching: boolean
   /** The portlet's effective refresh interval, when it refreshes on one */
@@ -38,28 +38,23 @@ function useNow(tickMs: number): number {
   return now
 }
 
-/** The later of two ISO times. */
-function latest(a: string | undefined, b: string | undefined): string | undefined {
-  if (!a) return b
-  if (!b) return a
-  return Date.parse(b) > Date.parse(a) ? b : a
-}
-
 export default function DataFreshnessIndicator({
   computedAt,
-  checkedAt,
+  getCheckedAt,
   isFetching,
   intervalSeconds,
   isPaused
 }: DataFreshnessIndicatorProps) {
   const { t, locale } = useTranslation()
   const now = useNow(CLOCK_TICK_MS)
+  const checkedAt = getCheckedAt?.()
 
   const computedMs = computedAt ? Date.parse(computedAt) : NaN
   const hasComputedAt = Number.isFinite(computedMs)
   const checkedMs = checkedAt ? Date.parse(checkedAt) : NaN
   const hasCheckedAt = Number.isFinite(checkedMs)
-  const confirmedAt = latest(computedAt, hasCheckedAt ? checkedAt : undefined)
+  // Counted from the later of computed-at and checked-at
+  const confirmedAt = hasCheckedAt && (!hasComputedAt || checkedMs > computedMs) ? checkedAt : computedAt
   const isStale = !isPaused && !isFetching && isComputedAtStale(confirmedAt, intervalSeconds, now)
 
   let ageLabel: string | null = null

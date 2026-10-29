@@ -23,9 +23,10 @@ import { stableStringify } from '../../shared/queryKey.js'
 import { useDebounceQuery } from '../useDebounceQuery.js'
 import { withChartGapFilling, type ChartGapFillOptions } from '../../utils/gapFilling.js'
 import { createRefetchMaxAgeTracker, type MaxAgeOptions } from '../../client/maxAge.js'
-import { shareUnchangedResultSet } from '../../client/resultFingerprint.js'
+import { keepUnchangedResult } from '../../client/resultFingerprint.js'
 import { resultSetComputedAt } from '../../utils/freshness.js'
-import { useQuerySubscription, type SubscribeOption } from './useQuerySubscription.js'
+import { useQuerySubscription } from './useQuerySubscription.js'
+import type { SubscribeOption } from '../../client/subscription.js'
 
 // Default debounce delay in milliseconds
 const DEFAULT_DEBOUNCE_MS = 300
@@ -82,10 +83,9 @@ export interface UseCubeLoadQueryOptions {
   /**
    * Keep the query current (Cube.js `subscribe`). The query's refresh key is
    * checked every 10 seconds at most (raised to
-   * `features.refresh.minIntervalSeconds`, or to `{ intervalSeconds }`), in one
-   * `/refresh-keys` call with every other subscription on the page, and the
-   * query refetches only when its key changed. A refetch that returns the same
-   * rows keeps the previous `resultSet` rows. Against a server without
+   * `features.refresh.minIntervalSeconds`, or to `{ intervalSeconds }`), and
+   * the query refetches only when its key changed. A refetch that returns the same
+   * rows keeps the previous `resultSet`. Against a server without
    * `/refresh-keys` it refetches on the interval with max-age equal to it.
    * Works with `features.refresh` off. Stops while the query is skipped or
    * disabled, and in `manualRefresh` mode.
@@ -139,12 +139,12 @@ export interface UseCubeLoadQueryResult {
   /** Warnings from query planning (e.g., fan-out without dimensions) */
   warnings: QueryWarning[] | undefined
   /**
-   * When the rows were computed on the server (ISO). Advances on every
-   * successful refetch, including one that returned the same rows.
+   * When the rows were computed on the server (ISO). A refetch that returned
+   * the same rows (same fingerprint) keeps the previous result, and this with it.
    */
   computedAt?: string
-  /** When the server last confirmed the query's refresh key (ISO), while subscribed */
-  checkedAt?: string
+  /** When the server last confirmed the query's refresh key (ISO), while subscribed. A getter: a check does not re-render */
+  getCheckedAt?: () => string | undefined
 }
 
 /**
@@ -265,8 +265,8 @@ export function useCubeLoadQuery(
     // so the query fetches with it once enabled
     staleTime: () => (refetchMaxAge.hasPendingMaxAge() ? 0 : staleTime),
     placeholderData: keepPreviousData ? (prevData) => prevData : undefined,
-    // Same result fingerprint as the rows shown: keep those rows, take the new freshness
-    structuralSharing: shareUnchangedResultSet,
+    // Same result fingerprint as the data shown: keep that data
+    structuralSharing: keepUnchangedResult,
   })
 
   // In auto mode, track executed query for consistency
@@ -343,9 +343,8 @@ export function useCubeLoadQuery(
 
   // Subscription: watch the query's refresh key while the query runs, and
   // refetch when it changes. A new query watches the new key.
-  const subscribedQueries = useMemo(() => (serverQuery ? [serverQuery] : null), [serverQuery])
-  const { checkedAt } = useQuerySubscription({
-    queries: subscribedQueries,
+  const { getCheckedAt } = useQuerySubscription({
+    queries: serverQuery,
     subscribe,
     active: !manualRefresh && shouldExecute && enabled,
     refetch: executeQuery
@@ -381,6 +380,6 @@ export function useCubeLoadQuery(
     executeQuery,
     warnings,
     computedAt: resultSetComputedAt(queryResult.data),
-    checkedAt,
+    getCheckedAt,
   }
 }

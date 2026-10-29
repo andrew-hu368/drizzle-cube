@@ -68,8 +68,8 @@ export interface PortletQueryResults {
   retentionCacheInfo: ReturnType<typeof useRetentionQuery>['cacheInfo']
   /** When the active mode's rows were computed on the server (oldest result for multi-query) */
   computedAt: string | undefined
-  /** When the server last confirmed the active mode's refresh keys, while subscribed */
-  checkedAt: string | undefined
+  /** When the server last confirmed the active mode's refresh keys, while subscribed (a getter) */
+  getCheckedAt: (() => string | undefined) | undefined
   refresh: (options?: MaxAgeOptions) => void
   retry: () => void
 }
@@ -209,19 +209,19 @@ export function usePortletQueryResults(params: UsePortletQueryResultsParams): Po
     flow: flowQueryResult.computedAt ?? undefined,
     funnel: funnelQueryResult.computedAt ?? undefined,
     multi: oldestComputedAt((multiQueryResult.resultSets ?? []).map(rs => resultSetComputedAt(rs))),
-    single: singleQueryResult.computedAt ?? resultSetComputedAt(singleQueryResult.resultSet)
+    single: resultSetComputedAt(singleQueryResult.resultSet)
   })
 
-  const checkedAt = pickByMode<string | undefined>({
-    retention: retentionQueryResult.checkedAt,
-    flow: flowQueryResult.checkedAt,
-    funnel: funnelQueryResult.checkedAt,
-    multi: multiQueryResult.checkedAt,
-    single: singleQueryResult.checkedAt
+  const getCheckedAt = pickByMode<(() => string | undefined) | undefined>({
+    retention: retentionQueryResult.getCheckedAt,
+    flow: flowQueryResult.getCheckedAt,
+    funnel: funnelQueryResult.getCheckedAt,
+    multi: multiQueryResult.getCheckedAt,
+    single: singleQueryResult.getCheckedAt
   })
 
-  // The one refresh path: the refresh button, shift+click and interval ticks
-  // all land here. Each hook refetches through its own observer and its own
+  // The refresh button and shift+click land here (change detection refetches
+  // through each hook's subscription). Each hook refetches through its own observer and its own
   // queryFn sends the max-age; old rows stay visible while it fetches. A hook
   // that is skipped (portlet off-screen) fetches when the portlet scrolls into
   // view.
@@ -268,7 +268,7 @@ export function usePortletQueryResults(params: UsePortletQueryResultsParams): Po
     flowCacheInfo: flowQueryResult.cacheInfo,
     retentionCacheInfo: retentionQueryResult.cacheInfo,
     computedAt,
-    checkedAt,
+    getCheckedAt,
     refresh,
     retry
   }

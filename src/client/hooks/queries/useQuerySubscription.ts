@@ -4,24 +4,22 @@
  *
  * Shared by the single, multi, funnel, flow and retention hooks, so a
  * `useCubeQuery(…, { subscribe: true })` call and a portlet with refresh on go
- * through the same path: one `/refresh-keys` call per tick for the page (the
- * client's `RefreshKeyCoordinator`), a refetch only for queries whose key
- * changed, and an interval refetch with max-age when keys are unavailable.
+ * through the same path: key checks batched by the client's
+ * `RefreshKeyCoordinator`, a refetch only when a key changed, and an interval
+ * refetch with max-age when keys are unavailable.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useCubeApi } from '../../providers/CubeApiProvider.js'
 import { useCubeFeatures } from '../../providers/CubeFeaturesProvider.js'
 import type { CubeQuery } from '../../types.js'
 import type { MaxAgeOptions } from '../../client/maxAge.js'
 import { stableStringify } from '../../shared/queryKey.js'
-import { resolveSubscribeIntervalSeconds, scheduleSubscription, type SubscribeOption } from '../../client/subscription.js'
-
-export type { SubscribeOption }
+import { resolveSubscribeIntervalSeconds, type SubscribeOption } from '../../client/subscription.js'
 
 export interface UseQuerySubscriptionParams {
-  /** The queries the hook sends to the server, or null when it has none yet */
-  queries: CubeQuery[] | null
+  /** The query (or queries) the hook sends to the server, or null when it has none yet */
+  queries: CubeQuery | CubeQuery[] | null
   subscribe: SubscribeOption | undefined
   /** Whether the hook is currently allowed to fetch (not skipped, disabled or in manual mode) */
   active: boolean
@@ -30,8 +28,11 @@ export interface UseQuerySubscriptionParams {
 }
 
 export interface QuerySubscriptionState {
-  /** When the server last confirmed this hook's keys (ISO), while subscribed */
-  checkedAt: string | undefined
+  /**
+   * When the server last confirmed this hook's keys (ISO), while subscribed. A
+   * getter, so a check does not re-render: read it on a render you have anyway.
+   */
+  getCheckedAt: () => string | undefined
 }
 
 export function useQuerySubscription({
@@ -42,7 +43,11 @@ export function useQuerySubscription({
 }: UseQuerySubscriptionParams): QuerySubscriptionState {
   const { cubeApi } = useCubeApi()
   const { features } = useCubeFeatures()
-  const [checkedAt, setCheckedAt] = useState<string | undefined>(undefined)
+  const checkedAtRef = useRef<number | undefined>(undefined)
+  const getCheckedAt = useCallback(
+    () => (checkedAtRef.current === undefined ? undefined : new Date(checkedAtRef.current).toISOString()),
+    []
+  )
 
   // Latest refetch, so a new callback identity does not re-register the watch
   const refetchRef = useRef(refetch)
@@ -50,32 +55,40 @@ export function useQuerySubscription({
     refetchRef.current = refetch
   }, [refetch])
 
-  const floor = resolveSubscribeIntervalSeconds(features.refresh?.minIntervalSeconds)
-  const requested = typeof subscribe === 'object' ? subscribe.intervalSeconds : undefined
-  const intervalSeconds = requested !== undefined && Number.isFinite(requested) && requested > 0
-    ? Math.max(Math.ceil(requested), floor)
-    : floor
-  const enabled = Boolean(subscribe) && active && !!queries && queries.length > 0
-  const queriesKey = enabled ? stableStringify(queries) : null
+  const intervalSeconds = resolveSubscribeIntervalSeconds(
+    features.refresh?.minIntervalSeconds,
+    typeof subscribe === 'object' ? subscribe.intervalSeconds : undefined
+  )
+  const watchedQueries = useMemo(
+    () => (queries === null ? null : Array.isArray(queries) ? queries : [queries]),
+    [queries]
+  )
+  const enabled = Boolean(subscribe) && active && !!watchedQueries && watchedQueries.length > 0
+  const queriesKey = useMemo(
+    () => (enabled ? stableStringify(watchedQueries) : null),
+    [enabled, watchedQueries]
+  )
 
   // The queries as of the last render; `queriesKey` says when they changed
-  const queriesRef = useRef(queries)
+  const queriesRef = useRef(watchedQueries)
   useEffect(() => {
-    queriesRef.current = queries
-  }, [queries])
+    queriesRef.current = watchedQueries
+  }, [watchedQueries])
 
   useEffect(() => {
     const watched = queriesRef.current
     if (!queriesKey || !watched) return
-    const stop = scheduleSubscription(
-      cubeApi,
-      watched,
+    const stop = cubeApi.watchRefreshKeys({
+      queries: watched,
       intervalSeconds,
-      options => refetchRef.current(options),
-      at => setCheckedAt(new Date(at).toISOString())
-    )
-    return stop
+      onChange: options => refetchRef.current(options),
+      onChecked: at => { checkedAtRef.current = at }
+    })
+    return () => {
+      stop()
+      checkedAtRef.current = undefined
+    }
   }, [cubeApi, queriesKey, intervalSeconds])
 
-  return { checkedAt: enabled ? checkedAt : undefined }
+  return { getCheckedAt }
 }

@@ -19,8 +19,9 @@ import { stableStringify } from '../../shared/queryKey.js'
 import { useDebounceQuery } from '../useDebounceQuery.js'
 import { withChartGapFilling, type ChartGapFillOptions } from '../../utils/gapFilling.js'
 import { createRefetchMaxAgeTracker, type MaxAgeOptions } from '../../client/maxAge.js'
-import { isResultSet, keepRowsWhenUnchanged, sameFingerprint } from '../../client/resultFingerprint.js'
-import { useQuerySubscription, type SubscribeOption } from './useQuerySubscription.js'
+import { keepUnchangedResult } from '../../client/resultFingerprint.js'
+import { useQuerySubscription } from './useQuerySubscription.js'
+import type { SubscribeOption } from '../../client/subscription.js'
 
 type MultiQueryServerConfig = MultiQueryConfig & { queries: CubeQuery[] }
 
@@ -28,40 +29,22 @@ type MultiQueryServerConfig = MultiQueryConfig & { queries: CubeQuery[] }
  * Gap-fill each successful query's result set for a chart, then re-derive the
  * merged and per-query data from the filled rows.
  */
-/**
- * Merged, gap-filled rows per unfilled merged rows array and fill option. A
- * refetch that kept its rows (unchanged fingerprints) keeps the same unfilled
- * array, so it gets the same filled arrays back and the chart does not redraw.
- */
-const filledMergeCache = new WeakMap<object, Map<string, { data: unknown[]; perQueryData: (unknown[] | null)[] }>>()
-
 function fillMultiQueryData(
   resultSets: CubeResultSet[],
   errors: (Error | null)[],
   config: MultiQueryServerConfig,
-  gapFill: ChartGapFillOptions,
-  unfilledData: unknown[]
+  gapFill: ChartGapFillOptions
 ): { resultSets: CubeResultSet[]; data: unknown[]; perQueryData: (unknown[] | null)[] } {
   const filled = resultSets.map((rs, i) => (errors[i] || !rs ? rs : withChartGapFilling(rs, gapFill)))
-  const cacheKey = String(gapFill.fillMissingDates)
-  let byOption = filledMergeCache.get(unfilledData)
-  if (!byOption) {
-    byOption = new Map()
-    filledMergeCache.set(unfilledData, byOption)
+  const successful = filled.filter((_, i) => !errors[i])
+  const successfulQueries = config.queries.filter((_, i) => !errors[i])
+  return {
+    resultSets: filled,
+    data: successful.length > 0
+      ? mergeQueryResults(successful, successfulQueries, config.mergeStrategy, config.mergeKeys, config.queryLabels)
+      : [],
+    perQueryData: filled.map((rs, i) => (errors[i] ? null : rs.rawData()))
   }
-  let rows = byOption.get(cacheKey)
-  if (!rows) {
-    const successful = filled.filter((_, i) => !errors[i])
-    const successfulQueries = config.queries.filter((_, i) => !errors[i])
-    rows = {
-      data: successful.length > 0
-        ? mergeQueryResults(successful, successfulQueries, config.mergeStrategy, config.mergeKeys, config.queryLabels)
-        : [],
-      perQueryData: filled.map((rs, i) => (errors[i] ? null : rs.rawData()))
-    }
-    byOption.set(cacheKey, rows)
-  }
-  return { resultSets: filled, ...rows }
 }
 
 // Default debounce delay in milliseconds
@@ -152,8 +135,8 @@ export interface UseMultiCubeLoadQueryResult {
    * results at most that old, or `{ bustCache: true }` to bypass caches.
    */
   refetch: (options?: MaxAgeOptions) => void
-  /** When the server last confirmed the queries' refresh keys (ISO), while subscribed */
-  checkedAt?: string
+  /** When the server last confirmed the queries' refresh keys (ISO), while subscribed. A getter: a check does not re-render */
+  getCheckedAt?: () => string | undefined
 }
 
 /**
@@ -234,10 +217,7 @@ export function useMultiCubeLoadQuery(
     queryFn: async () => {
       if (!serverConfig) throw new Error('No config provided')
 
-      const resultSets: CubeResultSet[] = await refetchMaxAge.runFetch((pendingOptions) => {
-        // Each query carries its own refresh key (attached by the client), so
-        // a subscription's combined key marker is not sent
-        const loadOptions = pendingOptions && { ...pendingOptions, refreshKey: undefined }
+      const resultSets: CubeResultSet[] = await refetchMaxAge.runFetch((loadOptions) => {
         // Use BatchCoordinator if enabled
         if (enableBatching && batchCoordinator) {
           return Promise.all(
@@ -296,8 +276,8 @@ export function useMultiCubeLoadQuery(
     // fetches with it once enabled
     staleTime: () => (refetchMaxAge.hasPendingMaxAge() ? 0 : staleTime),
     placeholderData: keepPreviousData ? (prevData) => prevData : undefined,
-    // Same result fingerprints as the rows shown: keep those rows, take the new freshness
-    structuralSharing: shareUnchangedMultiResult,
+    // Same result fingerprints as the data shown: keep that data
+    structuralSharing: keepUnchangedResult,
   })
 
   // Refetch with the requested max-age. While the hook is skipped (an
@@ -311,7 +291,7 @@ export function useMultiCubeLoadQuery(
   }, [refetchMaxAge, serverConfig, skip, enabled, refetchQuery])
 
   // Subscription: refetch when any of the queries' refresh keys changes
-  const { checkedAt } = useQuerySubscription({
+  const { getCheckedAt } = useQuerySubscription({
     queries: serverConfig?.queries ?? null,
     subscribe,
     active: !skip && enabled && !!serverConfig,
@@ -325,7 +305,7 @@ export function useMultiCubeLoadQuery(
     if (!result || !gapFillEnabled) return result
     return {
       ...result,
-      ...fillMultiQueryData(result.resultSets, result.errors, result.config, { fillMissingDates: gapFillMissingDates }, result.data)
+      ...fillMultiQueryData(result.resultSets, result.errors, result.config, { fillMissingDates: gapFillMissingDates })
     }
   }, [queryResult.data, gapFillEnabled, gapFillMissingDates])
 
@@ -349,31 +329,6 @@ export function useMultiCubeLoadQuery(
     debouncedConfig,
     isValidConfig,
     refetch,
-    checkedAt,
+    getCheckedAt,
   }
-}
-
-/**
- * `structuralSharing` for the multi-query result: when every query's result
- * fingerprint is unchanged, keep the merged rows and per-query rows (and each
- * result set's rows) and take the new freshness.
- */
-function shareUnchangedMultiResult(previous: unknown, next: unknown): unknown {
-  if (!hasResultSets(previous) || !hasResultSets(next)) return next
-  const unchanged = next.resultSets.length === previous.resultSets.length &&
-    next.resultSets.every((resultSet, index) =>
-      sameFingerprint(resultSet?.fingerprint?.(), previous.resultSets[index]?.fingerprint?.()))
-  if (!unchanged) return next
-  return {
-    ...next,
-    data: previous.data,
-    perQueryData: previous.perQueryData,
-    resultSets: next.resultSets.map((resultSet, index) => keepRowsWhenUnchanged(previous.resultSets[index], resultSet))
-  }
-}
-
-function hasResultSets(value: unknown): value is { resultSets: CubeResultSet[]; data: unknown; perQueryData: unknown } {
-  return typeof value === 'object' && value !== null && 'resultSets' in value &&
-    Array.isArray(value.resultSets) && value.resultSets.every(isResultSet) &&
-    'data' in value && 'perQueryData' in value
 }

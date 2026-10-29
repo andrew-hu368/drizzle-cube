@@ -6,7 +6,6 @@ import { CubeQueryError } from './CubeClient.js'
  */
 interface QueuedQuery {
   query: CubeQuery
-  refreshKey?: string
   resolve: (result: CubeResultSet) => void
   reject: (error: Error) => void
 }
@@ -15,18 +14,12 @@ interface QueuedQuery {
 export interface BatchRegisterOptions {
   /** Oldest cached server result accepted, in seconds. 0 skips the cache read. */
   maxAgeSeconds?: number
-  /** This query's refresh key (it travels per query, so it does not split the batch). */
-  refreshKey?: string
 }
 
-/**
- * Executes one batch. `options` is passed only when the batch has a max-age;
- * `refreshKeys` (one per query) only when a query carries a refresh key.
- */
+/** Executes one batch. `options` is passed only when the batch has a max-age. */
 export type BatchExecutor = (
   queries: CubeQuery[],
-  options?: { maxAgeSeconds?: number },
-  refreshKeys?: Array<string | undefined>
+  options?: BatchRegisterOptions
 ) => Promise<CubeResultSet[]>
 
 /**
@@ -58,12 +51,11 @@ export class BatchCoordinator {
   public register(query: CubeQuery, options?: BatchRegisterOptions): Promise<CubeResultSet> {
     const maxAgeSeconds = options?.maxAgeSeconds
     return new Promise<CubeResultSet>((resolve, reject) => {
-      const entry: QueuedQuery = { query, refreshKey: options?.refreshKey, resolve, reject }
       const queue = this.queues.get(maxAgeSeconds)
       if (queue) {
-        queue.push(entry)
+        queue.push({ query, resolve, reject })
       } else {
-        this.queues.set(maxAgeSeconds, [entry])
+        this.queues.set(maxAgeSeconds, [{ query, resolve, reject }])
       }
 
       // Schedule flush if not already scheduled
@@ -112,17 +104,10 @@ export class BatchCoordinator {
       // Extract queries
       const queries = queue.map(item => item.query)
 
-      const refreshKeys = queue.some(item => item.refreshKey !== undefined)
-        ? queue.map(item => item.refreshKey)
-        : undefined
-
       // Execute batch
-      const maxAgeOptions = maxAgeSeconds === undefined ? undefined : { maxAgeSeconds }
-      const results = refreshKeys !== undefined
-        ? await this.batchExecutor(queries, maxAgeOptions, refreshKeys)
-        : maxAgeOptions !== undefined
-          ? await this.batchExecutor(queries, maxAgeOptions)
-          : await this.batchExecutor(queries)
+      const results = maxAgeSeconds === undefined
+        ? await this.batchExecutor(queries)
+        : await this.batchExecutor(queries, { maxAgeSeconds })
 
       // Resolve individual promises with their corresponding results
       queue.forEach((item, index) => {

@@ -5,7 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { Mock } from 'vitest'
-import { BatchCoordinator, type BatchExecutor } from '../../src/client/client/BatchCoordinator'
+import { BatchCoordinator } from '../../src/client/client/BatchCoordinator'
 import type { CubeQuery, CubeResultSet } from '../../src/client/types'
 
 // Mock result factory
@@ -499,27 +499,5 @@ describe('BatchCoordinator', () => {
       expect((await ok).rawData()).toEqual([{ ok: true }])
       await failingExpectation
     })
-  })
-})
-
-describe('BatchCoordinator refresh keys (issue #271, Phase 1)', () => {
-  it('carries refresh keys per query without splitting the batch', async () => {
-    vi.useFakeTimers()
-    const resultSet: CubeResultSet = { rawData: () => [], tablePivot: () => [], series: () => [], annotation: () => ({}) }
-    const executor = vi.fn<BatchExecutor>(async (queries) => queries.map(() => resultSet))
-    const coordinator = new BatchCoordinator(executor, 50)
-    const a = { measures: ['A.count'] }
-    const b = { measures: ['B.count'] }
-
-    const pending = [
-      coordinator.register(a, { refreshKey: 'key-a' }),
-      coordinator.register(b)
-    ]
-    await vi.advanceTimersByTimeAsync(60)
-    await Promise.all(pending)
-
-    expect(executor).toHaveBeenCalledTimes(1)
-    expect(executor).toHaveBeenCalledWith([a, b], undefined, ['key-a', undefined])
-    vi.useRealTimers()
   })
 })

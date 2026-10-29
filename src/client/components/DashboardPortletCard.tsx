@@ -21,8 +21,8 @@ import PortletCardHeader from './dashboardPortletCard/PortletCardHeader.js'
 import PortletFloatingActions from './dashboardPortletCard/PortletFloatingActions.js'
 import FilterFieldChip from './dashboardPortletCard/FilterFieldChip.js'
 import { useCubeFeatures } from '../providers/CubeFeaturesProvider.js'
-import { isRefreshFeatureEnabled, resolveEffectiveRefresh, resolveLiveRefreshSeconds } from '../utils/freshness.js'
-import { useDocumentHidden } from '../hooks/useDocumentHidden.js'
+import { isRefreshFeatureEnabled } from '../utils/freshness.js'
+import { usePortletLiveRefresh } from '../hooks/dashboard/usePortletLiveRefresh.js'
 import { buildContainerClassName, buildHeaderClassName, buildContainerStyle, resolveDisplayModes } from './dashboardPortletCard/cardStyles.js'
 
 interface PortletChartBodyProps {
@@ -226,19 +226,12 @@ const DashboardPortletCard = React.memo(function DashboardPortletCard({
   // and holds its queries while scrolled away
   const { features } = useCubeFeatures()
   const refreshFeatureEnabled = isRefreshFeatureEnabled(features)
-  const effectiveRefresh = useMemo(
-    () => resolveEffectiveRefresh(portlet.refresh, dashboardRefresh, features),
-    [portlet.refresh, dashboardRefresh, features]
-  )
-  const isDashboardRefreshPaused = useDashboardStore(state => state.isRefreshPaused)
-  const isPortletRefreshPaused = useDashboardStore(state => state.pausedPortletIds.includes(portlet.id))
-  // While live, the chart subscribes its queries to change detection
-  const documentHidden = useDocumentHidden()
-  const subscribeIntervalSeconds = resolveLiveRefreshSeconds(effectiveRefresh, {
-    stopped: isEditMode || isDashboardRefreshPaused,
-    portletPaused: isPortletRefreshPaused,
-    documentHidden
-  })
+  const {
+    effectiveRefresh,
+    isDashboardPaused: isDashboardRefreshPaused,
+    isPortletPaused: isPortletRefreshPaused,
+    subscribeIntervalSeconds
+  } = usePortletLiveRefresh(portlet, dashboardRefresh)
   const [freshness, setFreshness] = useState<PortletFreshness>({ isFetching: false })
   const onToggleRefreshPaused = callbacks.onToggleRefreshPaused
   const refreshPause = useMemo(() => {
@@ -253,7 +246,7 @@ const DashboardPortletCard = React.memo(function DashboardPortletCard({
   const freshnessIndicator = refreshFeatureEnabled
     ? {
         computedAt: freshness.computedAt,
-        checkedAt: freshness.checkedAt,
+        getCheckedAt: freshness.getCheckedAt,
         isFetching: freshness.isFetching,
         intervalSeconds: effectiveRefresh?.intervalSeconds,
         isPaused: !!effectiveRefresh && (isDashboardRefreshPaused || isPortletRefreshPaused)

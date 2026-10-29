@@ -1,15 +1,15 @@
 /**
- * RefreshKeyCoordinator: one /refresh-keys call per tick for every watched
- * query on the page; a watcher hears only about its own queries.
+ * RefreshKeyCoordinator: each watcher checks on its own clock-aligned
+ * interval; checks that land together share one /refresh-keys call.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   RefreshKeyCoordinator,
-  type RefreshKeyEvent,
   type RefreshKeyFetcher,
   type RefreshKeyResult
 } from '../../src/client/client/RefreshKeyCoordinator'
+import type { MaxAgeOptions } from '../../src/client/client/maxAge'
 import type { CubeQuery } from '../../src/client/types'
 
 const orders: CubeQuery = { measures: ['Orders.count'] }
@@ -47,16 +47,18 @@ describe('RefreshKeyCoordinator', () => {
 
   beforeEach(() => {
     vi.useFakeTimers()
+    // Checks are aligned to the clock; start on a round time
+    vi.setSystemTime(new Date('2026-10-23T10:00:00.000Z'))
     server = createFakeServer()
-    coordinator = new RefreshKeyCoordinator(server.fetcher, { minIntervalSeconds: 5 })
+    coordinator = new RefreshKeyCoordinator(server.fetcher)
   })
 
   afterEach(() => {
     vi.useRealTimers()
   })
 
-  function watch(queries: CubeQuery[], intervalSeconds?: number) {
-    const events: RefreshKeyEvent[] = []
+  function watch(queries: CubeQuery[], intervalSeconds = 10) {
+    const events: MaxAgeOptions[] = []
     const checks: number[] = []
     const stop = coordinator.watch({
       queries,
@@ -67,28 +69,20 @@ describe('RefreshKeyCoordinator', () => {
     return { events, checks, stop }
   }
 
-  it('sends one call per tick for every watched query', async () => {
+  it('shares one call between watchers that check together, each query once', async () => {
     watch([orders])
     watch([users])
     watch([orders])
 
     await advanceSeconds(0.1)
-    expect(server.calls).toHaveLength(1)
-    expect(server.calls[0]).toEqual([orders, users])
+    expect(server.calls).toEqual([[orders, users]])
 
     await advanceSeconds(10)
     expect(server.calls).toHaveLength(2)
     expect(server.calls[1]).toEqual([orders, users])
   })
 
-  it('records keys on the first response without notifying', async () => {
-    const { events, checks } = watch([orders])
-    await advanceSeconds(0.1)
-    expect(events).toEqual([])
-    expect(checks).toHaveLength(1)
-  })
-
-  it('notifies only the watchers whose query key changed, with the new key', async () => {
+  it('refetches only the watchers whose query key changed', async () => {
     const a = watch([orders])
     const b = watch([users])
     await advanceSeconds(0.1)
@@ -96,7 +90,7 @@ describe('RefreshKeyCoordinator', () => {
     server.set(orders, 'changed')
     await advanceSeconds(10)
 
-    expect(a.events).toEqual([{ type: 'changed', refreshKeys: ['changed'] }])
+    expect(a.events).toEqual([{ refreshKey: 'changed' }])
     expect(b.events).toEqual([])
     expect(b.checks).toHaveLength(2)
 
@@ -104,55 +98,44 @@ describe('RefreshKeyCoordinator', () => {
     expect(a.events).toHaveLength(1)
   })
 
-  it('notifies a multi-query watcher once when any of its queries changed', async () => {
+  it('refetches a multi-query watcher once when any of its queries changed', async () => {
     const multi = watch([orders, users])
     await advanceSeconds(0.1)
     server.set(users, 'u2')
     await advanceSeconds(10)
-    expect(multi.events).toEqual([{ type: 'changed', refreshKeys: ['initial', 'u2'] }])
+    expect(multi.events).toEqual([{ refreshKey: 'initial|u2' }])
   })
 
-  it('ticks at the smallest checkAfterSeconds, floored by the minimum interval', async () => {
-    server.set(orders, 'k', 30)
-    server.set(users, 'k', 2)
-    watch([orders])
+  it('checks each watcher on its own interval, raised by checkAfterSeconds', async () => {
+    watch([orders], 10)
+    watch([users], 30)
     await advanceSeconds(0.1)
     expect(server.calls).toHaveLength(1)
 
-    // users asks for 2 s, the floor is 5 s
-    await advanceSeconds(4.9)
-    expect(server.calls).toHaveLength(1)
-    watch([users])
-    await advanceSeconds(0.1)
-    expect(server.calls).toHaveLength(2)
-    await advanceSeconds(5)
-    expect(server.calls).toHaveLength(3)
+    await advanceSeconds(20)
+    expect(server.calls.slice(1)).toEqual([[orders], [orders]])
+    await advanceSeconds(10)
+    expect(server.calls[3]).toEqual(expect.arrayContaining([orders, users]))
+
+    // The server asks orders to be checked every 60 s from its next check (at 40 s)
+    server.set(orders, 'initial', 60)
+    await advanceSeconds(10)
+    expect(server.calls).toHaveLength(5)
+    await advanceSeconds(50)
+    // 60 s: both; 90 s: users only, orders waits for 120 s
+    expect(server.calls.slice(5)).toEqual([expect.arrayContaining([orders, users]), [users]])
   })
 
-  it('is floored by a watcher\'s own interval', async () => {
-    watch([orders], 60)
-    await advanceSeconds(0.1)
-    await advanceSeconds(59)
-    expect(server.calls).toHaveLength(1)
-    await advanceSeconds(1)
-    expect(server.calls).toHaveLength(2)
-  })
-
-  it('falls back to an interval refetch while a key is null', async () => {
+  it('falls back to an interval refetch with max-age while a key is null', async () => {
     server.set(orders, null, 10)
     const { events } = watch([orders])
     await advanceSeconds(0.1)
     expect(events).toEqual([])
 
     await advanceSeconds(10)
-    expect(events).toEqual([{ type: 'fallback', maxAgeSeconds: 10 }])
+    expect(events).toEqual([{ maxAgeSeconds: 10 }])
     await advanceSeconds(10)
     expect(events).toHaveLength(2)
-
-    // A key again: the next change notifies as usual
-    server.set(orders, 'back', 10)
-    await advanceSeconds(10)
-    expect(events[2]).toEqual({ type: 'changed', refreshKeys: ['back'] })
   })
 
   it('falls back to an interval refetch when /refresh-keys fails (an older server)', async () => {
@@ -161,7 +144,7 @@ describe('RefreshKeyCoordinator', () => {
     await advanceSeconds(0.1)
     expect(events).toEqual([])
     await advanceSeconds(10)
-    expect(events).toEqual([{ type: 'fallback', maxAgeSeconds: 10 }])
+    expect(events).toEqual([{ maxAgeSeconds: 10 }])
   })
 
   it('stops calling when nothing is watched, and remembers keys for the next watcher', async () => {
@@ -175,7 +158,7 @@ describe('RefreshKeyCoordinator', () => {
     server.set(orders, 'while-away')
     const second = watch([orders])
     await advanceSeconds(0.1)
-    expect(second.events).toEqual([{ type: 'changed', refreshKeys: ['while-away'] }])
+    expect(second.events).toEqual([{ refreshKey: 'while-away' }])
   })
 
   it('exposes the current key of a watched query only', async () => {
@@ -190,12 +173,13 @@ describe('RefreshKeyCoordinator', () => {
 
   it('does not notify a watcher that stopped while a call was in flight', async () => {
     let release: () => void = () => {}
-    const slow: RefreshKeyFetcher = (queries) => new Promise(resolve => {
-      release = () => resolve(queries.map(() => ({ key: 'x', checkAfterSeconds: 10 })))
-    })
-    coordinator = new RefreshKeyCoordinator(slow)
-    const events: RefreshKeyEvent[] = []
-    const stop = coordinator.watch({ queries: [orders], onChange: e => events.push(e) })
+    let call = 0
+    coordinator = new RefreshKeyCoordinator((queries) => new Promise(resolve => {
+      // A different key each call, so the second response would be a change
+      const key = `k${++call}`
+      release = () => resolve(queries.map(() => ({ key, checkAfterSeconds: 10 })))
+    }))
+    const { events, stop } = watch([orders])
     await advanceSeconds(0.1)
     release()
     await advanceSeconds(10)

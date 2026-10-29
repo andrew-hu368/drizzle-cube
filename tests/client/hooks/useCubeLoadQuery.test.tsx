@@ -623,6 +623,8 @@ describe('useCubeLoadQuery', () => {
 
     beforeEach(() => {
       vi.useFakeTimers()
+      // Key checks are aligned to the clock; start on a round time
+      vi.setSystemTime(new Date('2026-10-23T10:00:00.000Z'))
       loads.length = 0
       keyChecks.length = 0
       currentKey = 'k1'
@@ -663,38 +665,26 @@ describe('useCubeLoadQuery', () => {
       await advanceSeconds(31)
       expect(loads).toHaveLength(1)
       expect(keyChecks.length).toBeGreaterThanOrEqual(3)
-      expect(result.current.checkedAt).toBeDefined()
+      expect(result.current.getCheckedAt?.()).toBeDefined()
     })
 
-    it('refetches with the new key in X-Refresh-Key when the key changes', async () => {
-      const { wrapper } = createHookWrapper()
-      renderHook(() => useCubeLoadQuery(validQuery, { debounceMs: 0, subscribe: true }), { wrapper })
-      await advanceSeconds(1)
-
-      currentKey = 'k2'
-      fingerprint = 'fp-2'
-      await advanceSeconds(10)
-
-      expect(loads).toEqual([
-        { maxAge: null, refreshKey: null },
-        { maxAge: null, refreshKey: 'k2' }
-      ])
-    })
-
-    it('keeps the previous rows when a refetch returns the same fingerprint, while computed-at advances', async () => {
+    it('keeps the previous result when a refetch returns the same fingerprint', async () => {
       const { wrapper } = createHookWrapper()
       const { result } = renderHook(() => useCubeLoadQuery(validQuery, { debounceMs: 0, subscribe: true }), { wrapper })
       await advanceSeconds(1)
       const firstRows = result.current.rawData
-      const firstComputedAt = result.current.computedAt
+      const firstResultSet = result.current.resultSet
       expect(firstRows).not.toBeNull()
 
       currentKey = 'k2'
       await advanceSeconds(10)
-      expect(loads).toHaveLength(2)
+      // The refetch carries the new key and no max-age
+      expect(loads).toEqual([
+        { maxAge: null, refreshKey: null },
+        { maxAge: null, refreshKey: 'k2' }
+      ])
       expect(result.current.rawData).toBe(firstRows)
-      expect(result.current.resultSet?.rawData()).toBe(firstRows)
-      expect(Date.parse(result.current.computedAt ?? '')).toBeGreaterThan(Date.parse(firstComputedAt ?? ''))
+      expect(result.current.resultSet).toBe(firstResultSet)
 
       // Different rows: new data
       currentKey = 'k3'

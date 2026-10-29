@@ -95,7 +95,7 @@ export { createCubeClient } from './client/CubeClient.js'
 export { CubeClient, CubeQueryError } from './client/CubeClient.js'
 export type { MaxAgeOptions } from './client/maxAge.js'
 export type { CubeSubscribeCallback, CubeSubscription } from './client/CubeClient.js'
-export type { RefreshKeyResult, RefreshKeyEvent, RefreshKeyWatch } from './client/RefreshKeyCoordinator.js'
+export type { RefreshKeyResult, RefreshKeyWatch } from './client/RefreshKeyCoordinator.js'
 export type { SubscribeOption } from './client/subscription.js'
 
 // TanStack Query hooks for data fetching

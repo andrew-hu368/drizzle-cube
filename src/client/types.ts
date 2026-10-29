@@ -718,14 +718,14 @@ export interface AnalyticsPortletProps {
   eagerLoad?: boolean // Force immediate loading (default: false, lazy load enabled)
   /**
    * The portlet refreshes on an interval: while scrolled away its queries are
-   * disabled, so ticks only mark them stale and it fetches once back in view.
+   * disabled and stop checking for changes; back in view, the first check
+   * refetches only if the data changed meanwhile.
    * Without it a loaded portlet stays live when scrolled away.
    */
   hasIntervalRefresh?: boolean
   /**
    * Keep the portlet current by change detection: its queries' refresh keys
-   * are checked at most this often (one `/refresh-keys` call for the page) and
-   * it refetches when they change. Leave undefined while refresh is off,
+   * are checked at most this often and it refetches when they change. Leave undefined while refresh is off,
    * paused, or in edit mode. The dashboard sets it from the refresh config.
    */
   subscribeIntervalSeconds?: number
@@ -774,9 +774,10 @@ export interface PortletFreshness {
   isFetching: boolean
   /**
    * When the server last confirmed the portlet's refresh keys, so its rows are
-   * current even when they were computed earlier (change detection on).
+   * current even when they were computed earlier (change detection on). A
+   * getter, so a check does not re-render the portlet: read it when rendering.
    */
-  checkedAt?: string
+  getCheckedAt?: () => string | undefined
 }
 
 /**

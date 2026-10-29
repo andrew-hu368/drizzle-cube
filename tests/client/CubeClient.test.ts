@@ -259,26 +259,6 @@ describe('CubeClient', () => {
     })
   })
 
-  describe('refresh keys on loads (issue #271)', () => {
-    it('sends per-query refresh keys in the /batch body, and none when there are none', async () => {
-      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ results: [{ success: true, data: [] }, { success: true, data: [] }] }) })
-      const a: CubeQuery = { measures: ['A.count'] }
-      const b: CubeQuery = { measures: ['B.count'] }
-
-      await client.batchLoad([a, b], undefined, ['key-a', undefined])
-      await client.batchLoad([a, b])
-
-      expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ queries: [a, b], refreshKeys: ['key-a', null] })
-      expect(JSON.parse(mockFetch.mock.calls[1][1].body)).toEqual({ queries: [a, b] })
-    })
-
-    it('sends X-Refresh-Key on load when asked to', async () => {
-      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ data: [] }) })
-      await client.load({ measures: ['A.count'] }, { refreshKey: 'k9' })
-      expect(mockFetch.mock.calls[0][1].headers['X-Refresh-Key']).toBe('k9')
-    })
-  })
-
   describe('subscribe (issue #271): change detection through /refresh-keys', () => {
     const query: CubeQuery = { measures: ['Users.count'] }
     const calls: Array<{ error: Error | null; rows: unknown[] | null }> = []
@@ -310,6 +290,8 @@ describe('CubeClient', () => {
 
     beforeEach(() => {
       vi.useFakeTimers()
+      // Key checks are aligned to the clock; start on a round time
+      vi.setSystemTime(new Date('2026-10-23T10:00:00.000Z'))
       calls.length = 0
       keys = new Map()
       refreshKeysStatus = 200
@@ -374,7 +356,7 @@ describe('CubeClient', () => {
       subscription.unsubscribe()
     })
 
-    it('sends one /refresh-keys call per tick for every subscription on the client', async () => {
+    it('shares one /refresh-keys call between subscriptions that check together', async () => {
       const other: CubeQuery = { measures: ['Orders.count'] }
       const a = client.subscribe(query, null, callback)
       const b = client.subscribe(other, null, callback)

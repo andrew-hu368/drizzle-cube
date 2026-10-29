@@ -14,11 +14,12 @@ export interface MaxAgeOptions {
   /** Shorthand for `maxAgeSeconds: 0` (shift+click on refresh). */
   bustCache?: boolean
   /**
-   * The composite refresh key whose change triggered this refetch. Sent as
-   * `X-Refresh-Key`, it scopes the server's result cache entry to the new data,
-   * so the first viewer in a security context misses and the rest share the
-   * result. A refetch with a new key also cancels a fetch already in flight,
-   * which may predate the change.
+   * The refresh key whose change triggered this refetch. A refetch with a new
+   * key cancels a fetch already in flight, which may predate the change. The
+   * client sends each watched query's current key as `X-Refresh-Key` (or in the
+   * `/batch` body) by itself, scoping the server's result cache entry to the
+   * new data, so the first viewer in a security context misses and the rest
+   * share the result.
    */
   refreshKey?: string
 }

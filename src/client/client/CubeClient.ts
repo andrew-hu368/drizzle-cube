@@ -12,7 +12,7 @@ import type {
   ExplainOptions
 } from '../types.js'
 import { maxAgeHeaders, refreshKeyHeaders, resolveMaxAgeSeconds, type MaxAgeOptions } from './maxAge.js'
-import { resolveSubscribeIntervalSeconds, scheduleSubscription } from './subscription.js'
+import { resolveSubscribeIntervalSeconds, SUBSCRIBE_INTERVAL_SECONDS } from './subscription.js'
 import { RefreshKeyCoordinator, type RefreshKeyResult, type RefreshKeyWatch } from './RefreshKeyCoordinator.js'
 
 /**
@@ -95,8 +95,8 @@ export class CubeClient {
   /**
    * Load one query. `maxAgeSeconds` sends `x-cache-max-age`, so the server
    * answers from its cache only when the cached result is at most that old;
-   * `bustCache: true` is max-age 0. `refreshKey` (or, for a watched query, the
-   * last refresh key seen for it) sends `x-refresh-key`.
+   * `bustCache: true` is max-age 0. A watched query's last refresh key goes
+   * as `x-refresh-key`.
    */
   async load(query: CubeQuery, options?: MaxAgeOptions): Promise<CubeResultSet> {
     // Use GET with query parameter for standard Cube.js compatibility
@@ -111,7 +111,7 @@ export class CubeClient {
         Object.entries(this.headers).filter(([key]) => key !== 'Content-Type')
       ),
       ...maxAgeHeaders(resolveMaxAgeSeconds(options)),
-      ...refreshKeyHeaders(options?.refreshKey ?? this.refreshKeyCoordinator?.currentKey(query))
+      ...refreshKeyHeaders(this.refreshKeyCoordinator?.currentKey(query))
     }
 
     const response = await fetch(url, {
@@ -149,16 +149,17 @@ export class CubeClient {
     const keys = typeof body === 'object' && body !== null && 'keys' in body ? body.keys : undefined
     if (!Array.isArray(keys)) throw new CubeQueryError('Refresh keys failed: malformed response')
     return keys.map((entry: unknown): RefreshKeyResult => {
-      const key = typeof entry === 'object' && entry !== null && 'key' in entry && typeof entry.key === 'string' ? entry.key : null
-      const checkAfter = typeof entry === 'object' && entry !== null && 'checkAfterSeconds' in entry ? Number(entry.checkAfterSeconds) : NaN
-      return { key, checkAfterSeconds: Number.isFinite(checkAfter) && checkAfter > 0 ? checkAfter : 10 }
+      const record = typeof entry === 'object' && entry !== null ? entry : {}
+      const key = 'key' in record && typeof record.key === 'string' ? record.key : null
+      const checkAfter = 'checkAfterSeconds' in record ? Number(record.checkAfterSeconds) : NaN
+      return { key, checkAfterSeconds: Number.isFinite(checkAfter) && checkAfter > 0 ? checkAfter : SUBSCRIBE_INTERVAL_SECONDS }
     })
   }
 
   /**
-   * Watch queries for data changes. One `/refresh-keys` call per tick covers
-   * every watcher on this client; `onChange` hears only about its own queries.
-   * Returns a function that stops watching.
+   * Watch queries for data changes. Checks that land together share one
+   * `/refresh-keys` call across every watcher on this client. Returns a
+   * function that stops watching.
    */
   watchRefreshKeys(watch: RefreshKeyWatch): () => void {
     this.refreshKeyCoordinator ??= new RefreshKeyCoordinator(queries => this.refreshKeys(queries))
@@ -168,7 +169,7 @@ export class CubeClient {
   /**
    * Keep a query current (Cube.js `subscribe`). The callback receives the
    * initial load, then a result each time the query's data changes: the client
-   * polls `/refresh-keys` (one call for every subscription on this client) and
+   * checks `/refresh-keys` (checks that land together share one call) and
    * reloads only when the query's refresh key moved, sending the new key so
    * subscribers in one security context share the reload. A reload that
    * returns the same rows (same result fingerprint) is not delivered.
@@ -225,8 +226,10 @@ export class CubeClient {
     }
 
     void deliver(options ?? undefined)
-    const stop = scheduleSubscription(this, [query], this.subscribeIntervalSeconds, refetchOptions => {
-      void deliver(refetchOptions)
+    const stop = this.watchRefreshKeys({
+      queries: [query],
+      intervalSeconds: this.subscribeIntervalSeconds,
+      onChange: refetchOptions => void deliver(refetchOptions)
     })
 
     return {
@@ -319,15 +322,10 @@ export class CubeClient {
    * Execute multiple queries in a single batch request
    * Used by BatchCoordinator to optimize network requests.
    * `maxAgeSeconds` applies to every query in the batch; `bustCache: true` is
-   * max-age 0. `refreshKeys` (one per query, defaulting to the last key seen
-   * for a watched query) go in the body as the server's per-query
-   * `refreshKeys`.
+   * max-age 0. Each watched query's last refresh key goes in the body as the
+   * server's per-query `refreshKeys`.
    */
-  async batchLoad(
-    queries: CubeQuery[],
-    options?: MaxAgeOptions,
-    refreshKeys?: Array<string | undefined>
-  ): Promise<CubeResultSet[]> {
+  async batchLoad(queries: CubeQuery[], options?: MaxAgeOptions): Promise<CubeResultSet[]> {
     const url = `${this.apiUrl}/batch`
 
     const requestHeaders: Record<string, string> = {
@@ -335,9 +333,7 @@ export class CubeClient {
       ...maxAgeHeaders(resolveMaxAgeSeconds(options))
     }
 
-    const keys = queries.map((query, index) =>
-      refreshKeys?.[index] ?? this.refreshKeyCoordinator?.currentKey(query) ?? null
-    )
+    const keys = queries.map(query => this.refreshKeyCoordinator?.currentKey(query) ?? null)
     const body = keys.some(key => key !== null) ? { queries, refreshKeys: keys } : { queries }
 
     const response = await fetch(url, {
