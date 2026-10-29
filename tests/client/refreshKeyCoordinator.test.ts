@@ -147,6 +147,15 @@ describe('RefreshKeyCoordinator', () => {
     expect(events).toEqual([{ maxAgeSeconds: 10 }])
   })
 
+  it('falls back to an interval refetch when /refresh-keys returns the wrong number of keys', async () => {
+    coordinator = new RefreshKeyCoordinator(async () => [])
+    const { events } = watch([orders])
+    await advanceSeconds(0.1)
+    expect(events).toEqual([])
+    await advanceSeconds(10)
+    expect(events).toEqual([{ maxAgeSeconds: 10 }])
+  })
+
   it('stops calling when nothing is watched, and remembers keys for the next watcher', async () => {
     const first = watch([orders])
     await advanceSeconds(0.1)

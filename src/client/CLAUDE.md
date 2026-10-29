@@ -48,8 +48,9 @@ src/client/
 │
 ├── client/                        API client
 │   ├── CubeClient.ts             HTTP client for Cube-compatible API
-│   ├── BatchCoordinator.ts       Request batching (one queue per max-age)
-│   ├── RefreshKeyCoordinator.ts  Change detection: per-watcher clock-aligned /refresh-keys checks, batched; last key per query
+│   ├── batcher.ts                createBatcher: queue, flush after a delay, settle each item from one call; dedup by key, one call per group
+│   ├── BatchCoordinator.ts       /batch loads on createBatcher (one group per max-age; per-result errors)
+│   ├── RefreshKeyCoordinator.ts  Change detection: per-watcher clock-aligned /refresh-keys checks, batched on createBatcher (dedup by query); last key per query
 │   ├── subscription.ts           Subscription interval and `subscribe` option
 │   ├── resultFingerprint.ts      structuralSharing: keep the previous data when the result fingerprint is unchanged
 │   └── maxAge.ts                 Max-age / refresh-key options → headers; per-hook refetch tracker

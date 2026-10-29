@@ -19,6 +19,7 @@
 import type { CubeQuery } from '../types.js'
 import type { MaxAgeOptions } from './maxAge.js'
 import { stableStringify } from '../shared/queryKey.js'
+import { createBatcher, type Batcher } from './batcher.js'
 
 /** One query's composite key from `/refresh-keys`. */
 export interface RefreshKeyResult {
@@ -47,22 +48,22 @@ const BATCH_DELAY_MS = 10
 /** Remembered keys of unwatched queries are dropped beyond this many. */
 const MAX_REMEMBERED_QUERIES = 500
 
-interface PendingKey {
-  query: CubeQuery
-  promise: Promise<RefreshKeyResult>
-  resolve: (result: RefreshKeyResult) => void
-  reject: (error: unknown) => void
-}
-
 export class RefreshKeyCoordinator {
-  private readonly fetcher: RefreshKeyFetcher
   /** Last key seen per query, and how many watchers watch it */
   private readonly keys = new Map<string, { key?: string; watchers: number }>()
-  private readonly pending = new Map<string, PendingKey>()
-  private flushTimer: ReturnType<typeof setTimeout> | undefined
+  /** One query asked for by several watchers goes once and shares its promise */
+  private readonly batcher: Batcher<CubeQuery, RefreshKeyResult, never>
 
   constructor(fetcher: RefreshKeyFetcher) {
-    this.fetcher = fetcher
+    this.batcher = createBatcher({
+      delayMs: BATCH_DELAY_MS,
+      key: stableStringify,
+      execute: async (queries: CubeQuery[]) => {
+        const results = await fetcher(queries)
+        if (!Array.isArray(results) || results.length !== queries.length) throw new Error('Malformed refresh keys')
+        return results
+      }
+    })
   }
 
   /** The last key seen for a query that is being watched, if any. */
@@ -86,7 +87,7 @@ export class RefreshKeyCoordinator {
     let timer: ReturnType<typeof setTimeout> | undefined
 
     const check = async (): Promise<void> => {
-      const results = await Promise.all(queries.map((query, index) => this.request(ids[index], query))).catch(() => undefined)
+      const results = await Promise.all(queries.map(query => this.batcher.add(query))).catch(() => undefined)
       if (stopped) return
       const everyMs = Math.max(1, intervalSeconds, ...(results ?? []).map(result => result.checkAfterSeconds)) * 1000
       const keys = results?.map(result => result.key)
@@ -113,33 +114,6 @@ export class RefreshKeyCoordinator {
       clearTimeout(timer)
       entries.forEach(entry => { entry.watchers-- })
       this.pruneRemembered()
-    }
-  }
-
-  /** One query's key, from the next shared `/refresh-keys` call. */
-  private request(id: string, query: CubeQuery): Promise<RefreshKeyResult> {
-    let pending = this.pending.get(id)
-    if (!pending) {
-      let resolve: PendingKey['resolve'] = () => {}
-      let reject: PendingKey['reject'] = () => {}
-      const promise = new Promise<RefreshKeyResult>((res, rej) => { resolve = res; reject = rej })
-      pending = { query, promise, resolve, reject }
-      this.pending.set(id, pending)
-    }
-    this.flushTimer ??= setTimeout(() => void this.flush(), BATCH_DELAY_MS)
-    return pending.promise
-  }
-
-  private async flush(): Promise<void> {
-    const batch = Array.from(this.pending.values())
-    this.pending.clear()
-    this.flushTimer = undefined
-    try {
-      const results = await this.fetcher(batch.map(pending => pending.query))
-      if (!Array.isArray(results) || results.length !== batch.length) throw new Error('Malformed refresh keys')
-      batch.forEach((pending, index) => pending.resolve(results[index]))
-    } catch (error) {
-      batch.forEach(pending => pending.reject(error))
     }
   }
 
