@@ -38,8 +38,11 @@ import {
   resolveBindingKeyExpr,
   extractDimensionName,
   type BindingKeyErrors,
-  type WithSubquery
+  type WithSubquery,
+  addMemberOrMappingCubes,
+  addMemberCube
 } from './analysis-utils.js'
+import { extractCubeNamesFromFilter } from '../logical-plan/planner-utils.js'
 import { FilterBuilder } from './filter-builder.js'
 import { DateTimeBuilder } from './date-time-builder.js'
 
@@ -79,6 +82,21 @@ export class RetentionQueryBuilder {
   constructor(private databaseAdapter: DatabaseAdapter) {
     this.dateTimeBuilder = new DateTimeBuilder(databaseAdapter)
     this.filterBuilder = new FilterBuilder(databaseAdapter, this.dateTimeBuilder)
+  }
+
+  /**
+   * Cubes a retention query reads: time dimension, binding key, breakdowns and
+   * the cohort and activity filters. Retention bypasses the logical plan, so
+   * this is its refresh-key dependency list.
+   */
+  cubesUsed(config: RetentionQueryConfig): Set<string> {
+    const cubes = new Set<string>()
+    addMemberOrMappingCubes(config.timeDimension, cubes)
+    addMemberOrMappingCubes(config.bindingKey, cubes)
+    for (const dimension of config.breakdownDimensions ?? []) addMemberCube(dimension, cubes)
+    extractCubeNamesFromFilter(config.cohortFilters, cubes)
+    extractCubeNamesFromFilter(config.activityFilters, cubes)
+    return cubes
   }
 
   /**

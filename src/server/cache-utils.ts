@@ -50,21 +50,37 @@ export function generateCacheKey(
   const queryHash = strongHash(JSON.stringify(normalizedQuery))
 
   // Include security context in key for tenant isolation
-  let key = `${prefix}query:${queryHash}`
+  return `${prefix}query:${queryHash}${scopeSuffix(securityContext, config, cubeSetKey)}`
+}
 
-  if (config.includeSecurityContext !== false) {
-    const ctxString = config.securityContextSerializer
-      ? config.securityContextSerializer(securityContext)
-      : JSON.stringify(sortObject(securityContext))
-    const ctxHash = strongHash(ctxString)
-    key += `:ctx:${ctxHash}`
-  }
+/**
+ * Cache key for one cube's refresh-key probe under a security context.
+ *
+ * Key structure: {prefix}refreshKey:{cubeName}:ctx:{securityHash}:cubes:{cubeSetKey}
+ *
+ * Scoped like {@link generateCacheKey}: the security-context hash (or the
+ * integrator's serializer) and the cube-set key, so two contexts, or two
+ * contexts mapped to different cube sets, never share a probe.
+ */
+export function generateRefreshKeyCacheKey(
+  cubeName: string,
+  securityContext: SecurityContext,
+  config: CacheKeyConfig = {},
+  cubeSetKey?: string
+): string {
+  const prefix = config.keyPrefix ?? 'drizzle-cube:'
+  return `${prefix}refreshKey:${cubeName}${scopeSuffix(securityContext, config, cubeSetKey)}`
+}
 
-  if (cubeSetKey) {
-    key += `:cubes:${cubeSetKey}`
-  }
+/** Security-context hash for cache scoping, honouring `securityContextSerializer`. */
+export function securityContextHash(securityContext: SecurityContext, config: CacheKeyConfig = {}): string {
+  const serializer = config.securityContextSerializer ?? ((ctx: SecurityContext) => JSON.stringify(sortObject(ctx)))
+  return strongHash(serializer(securityContext))
+}
 
-  return key
+function scopeSuffix(securityContext: SecurityContext, config: CacheKeyConfig, cubeSetKey: string | undefined): string {
+  const ctx = config.includeSecurityContext !== false ? `:ctx:${securityContextHash(securityContext, config)}` : ''
+  return cubeSetKey ? `${ctx}:cubes:${cubeSetKey}` : ctx
 }
 
 /**

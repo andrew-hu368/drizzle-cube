@@ -15,7 +15,8 @@ import type {
   ExplainOptions,
   ExplainResult,
   ExecutionOptions,
-  RLSSetupFn
+  RLSSetupFn,
+  EngineType
 } from './types/index.js'
 import { createDatabaseExecutor } from './executors/index.js'
 import { QueryExecutor } from './executor.js'
@@ -32,6 +33,10 @@ import { validateQueryAgainstCubes } from './query-validator.js'
 import type { QueryValidationResult } from './query-validator.js'
 import type { PlanOptimiser } from './logical-plan/index.js'
 import { t } from '../i18n/runtime.js'
+import { validateCubeRefreshKey, defaultRefreshKeyEverySeconds } from './refresh-keys/definition.js'
+import { computeRefreshKeys } from './refresh-keys/refresh-keys.js'
+import { generateRefreshKeyCacheKey, securityContextHash } from './cache-utils.js'
+import type { QueryRefreshKey } from './refresh-keys/refresh-keys.js'
 
 // Re-exported for backward compatibility — the implementation now lives in
 // query-validator.ts so the executor can import it without depending on the
@@ -131,13 +136,13 @@ export class SemanticLayerCompiler {
   // critical for RLS transaction safety.
   private db?: DatabaseExecutor['db']
   private schema?: any
-  private engineType?: 'postgres' | 'mysql' | 'sqlite' | 'singlestore' | 'duckdb' | 'databend' | 'snowflake'
+  private engineType?: EngineType
 
   constructor(options?: {
     drizzle?: DatabaseExecutor['db']
     schema?: any
     databaseExecutor?: DatabaseExecutor
-    engineType?: 'postgres' | 'mysql' | 'sqlite' | 'singlestore' | 'duckdb' | 'databend' | 'snowflake'
+    engineType?: EngineType
     /** Cache configuration for query result caching */
     cache?: CacheConfig
     /**
@@ -202,14 +207,14 @@ export class SemanticLayerCompiler {
   /**
    * Get the database engine type for SQL formatting
    */
-  getEngineType(): 'postgres' | 'mysql' | 'sqlite' | 'singlestore' | 'duckdb' | 'databend' | 'snowflake' | undefined {
+  getEngineType(): EngineType | undefined {
     return this.engineType
   }
 
   /**
    * Set Drizzle instance and schema directly
    */
-  setDrizzle(db: DatabaseExecutor['db'], schema?: any, engineType?: 'postgres' | 'mysql' | 'sqlite' | 'singlestore' | 'duckdb' | 'databend' | 'snowflake'): void {
+  setDrizzle(db: DatabaseExecutor['db'], schema?: any, engineType?: EngineType): void {
     this.db = db
     this.schema = schema
     this.engineType = engineType
@@ -381,6 +386,7 @@ export class SemanticLayerCompiler {
    * will be visible alongside it.
    */
   private prepareCube(cube: Cube, visibleCubes: Map<string, Cube>): void {
+    validateCubeRefreshKey(cube.name, cube.refreshKey)
     this.validateCalculatedMeasures(cube, visibleCubes)
     const resolver = new CalculatedMeasureResolver(visibleCubes)
     resolver.populateDependencies(cube)
@@ -860,6 +866,67 @@ export class SemanticLayerCompiler {
    */
   validateQuery(query: SemanticQuery, securityContext: SecurityContext): QueryValidationResult {
     return validateQueryAgainstCubes(this.resolveCubes(securityContext), query)
+  }
+
+  /**
+   * Composite refresh keys for `queries` under this security context, in
+   * order. Each key is a hash of the refresh keys of every cube the query
+   * reads (join-path cubes and every cube of a funnel, flow or retention
+   * included), so it changes when any of them changes. Compare it with the key
+   * from the previous call and refetch only when it moved, passing it as
+   * `ExecutionOptions.refreshKey` so viewers in one context share the refetch.
+   *
+   * Resolves the per-tenant cube set like `execute`, takes each cube's refresh
+   * key from that set, and caches probes per context key and cube-set key for
+   * `every`. Throws on an invalid query, as `execute` does. A cube key that
+   * fails is logged and turns only its queries' keys to `null`.
+   */
+  async getRefreshKeys(queries: SemanticQuery[], securityContext: SecurityContext): Promise<QueryRefreshKey[]> {
+    const setId = this.resolveSetId(securityContext)
+    const cubes = this.cubeSetId2Cubes(setId)
+    const cubeSetKey = this.cubeSetCacheKey(setId)
+    const planner = this.createQueryExecutor(false)
+    const provider = this.cacheConfig?.enabled !== false ? this.cacheConfig?.provider : undefined
+
+    return computeRefreshKeys(queries, {
+      // Always scoped by context, even with `includeSecurityContext: false`
+      scope: `${securityContextHash(securityContext, this.cacheConfig)}:${cubeSetKey}`,
+      defaultEverySeconds: defaultRefreshKeyEverySeconds(this.engineType),
+      dependentCubes: (query) => planner.getDependentCubeNames(cubes, query, securityContext).flatMap((name) => cubes.get(name) ?? []),
+      // A fresh executor per probe: an RLS transaction swaps the executor's
+      // connection, so concurrent probes must not share one.
+      evaluate: (cube) => this.createQueryExecutor(false).evaluateRefreshKey(cube, securityContext),
+      onError: (cubeName, error) => {
+        // codeql[js/log-injection] cube name and error come from server code, not the request
+        console.error(`[drizzle-cube] Refresh key for cube '${cubeName}' failed:`, error)
+      },
+      cache: provider && {
+        provider,
+        key: (cubeName) => generateRefreshKeyCacheKey(cubeName, securityContext, this.cacheConfig, cubeSetKey),
+        onError: this.cacheConfig?.onError
+      }
+    })
+  }
+
+  /**
+   * Evaluate one cube's key query (undefined without one) under a security
+   * context, with the SQL and parameters it ran. Backs
+   * {@link assertRefreshKeyIsContextScoped}; the value is the raw probe result, never sent to a client.
+   */
+  async describeRefreshKey(
+    cubeName: string,
+    securityContext: SecurityContext
+  ): Promise<{ value: unknown; query?: { sql: string; params: unknown[] } } | undefined> {
+    const cube = this.resolveCubes(securityContext).get(cubeName)
+    if (!cube) {
+      throw new Error(t('server.errors.cubeNotFound', { cubeName }))
+    }
+    if (!cube.refreshKey?.sql) return undefined
+    const executor = this.createQueryExecutor(false)
+    return {
+      value: await executor.evaluateRefreshKey(cube, securityContext),
+      query: executor.renderRefreshKey(cube, securityContext)
+    }
   }
 
   /**

@@ -8,7 +8,7 @@
  * re-instantiating JoinPathResolver.
  */
 
-import type { Cube, SemanticQuery } from '../types/index.js'
+import type { Cube, Filter, SemanticQuery } from '../types/index.js'
 import { JoinPathResolver } from '../resolvers/join-path-resolver.js'
 
 /**
@@ -80,24 +80,18 @@ export function analyzeCubeUsage(query: SemanticQuery): Set<string> {
 }
 
 /**
- * Recursively extract cube names from a filter (handles logical AND/OR filters)
- * into the provided set.
+ * Recursively extract the cube names a filter (or list of filters) references
+ * into the provided set, walking both `and` and `or` branches of logical filters.
  */
-export function extractCubeNamesFromFilter(filter: any, cubesUsed: Set<string>): void {
-  // Handle logical filters (AND/OR) - Server format: { and: [...] } or { or: [...] }
-  if ('and' in filter || 'or' in filter) {
-    const logicalFilters = filter.and || filter.or || []
-    for (const subFilter of logicalFilters) {
-      extractCubeNamesFromFilter(subFilter, cubesUsed)
-    }
-    return
-  }
-
-  // Handle simple filter condition
-  if ('member' in filter) {
-    const [cubeName] = filter.member.split('.')
-    if (cubeName) {
-      cubesUsed.add(cubeName)
+export function extractCubeNamesFromFilter(filters: Filter | Filter[] | undefined, cubesUsed: Set<string>): void {
+  if (!filters) return
+  for (const filter of Array.isArray(filters) ? filters : [filters]) {
+    if ('member' in filter) {
+      const [cubeName] = filter.member.split('.')
+      if (cubeName) cubesUsed.add(cubeName)
+    } else {
+      extractCubeNamesFromFilter(filter.and, cubesUsed)
+      extractCubeNamesFromFilter(filter.or, cubesUsed)
     }
   }
 }
